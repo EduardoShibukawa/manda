@@ -1,0 +1,14 @@
+{
+  "name": "manda",
+  "version": "0.1.0",
+  "description": "Manda-CARU: Coordination of Agent Runtime Units",
+  "type": "module",
+  "module": "src/cli.ts",
+  "bin": {
+    "manda": "bin/manda.ts",
+    "mandacaru": "bin/manda.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}

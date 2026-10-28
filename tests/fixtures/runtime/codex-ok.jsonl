@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"th_ok"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","command":"ls","exit_code":0}}
+{"type":"item.completed","item":{"type":"agent_message","text":"spec pronta"}}
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":50,"reasoning_output_tokens":20}}

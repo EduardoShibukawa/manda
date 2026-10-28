@@ -1,0 +1,4 @@
+{"type": "session", "version": 3, "id": "01a160e9-be3e-7188-bdb8-4752c1af2e25", "timestamp": "2026-10-22T00:01:33.759Z", "cwd": "<scratch>"}
+{"type": "agent_start"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "The user simply asked me to respond with only \"OK\". This is a straightforward instruction in Portuguese.", "thinkingSignature": ""}, {"type": "text", "text": "OK"}], "api": "anthropic-messages", "provider": "opencode", "model": "qwen3.8-flash", "usage": {"input": 511, "output": 24, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 535, "cost": {"input": 7.664999999999999e-05, "output": 1.1279999999999999e-05, "cacheRead": 0, "cacheWrite": 0, "total": 8.793e-05}, "cacheWrite1h": 0}, "stopReason": "stop", "timestamp": 1792627293843, "responseId": "msg_369a4ec1-ddc2-446b-a217-7146bfa160db", "rawStopReason": "end_turn", "durationMs": 1885, "thinkingLevel": "medium"}}
+{"type": "agent_settled"}
