@@ -4,7 +4,7 @@ import { basename, isAbsolute, join } from "node:path";
 
 import { loadBundle, resolvePlanDir, type TaskDoc } from "./bundle";
 import { emitEvent, type EventScope } from "./events";
-import { appendSpend, computeSpendFromJsonl, loadAskOwner, loadBudgetConfig, runSpendCmd } from "./budget";
+import { appendSpend, computeSpendFromJsonl, loadAskOwner, loadBudgetConfig, runSpendCmd, type Spend } from "./budget";
 import { buildAttemptPlan, getBreaker, hasFixedRuntime, loadEscalation } from "./escalation";import { runGate } from "./gate";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
@@ -224,7 +224,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const attemptSpecs: AttemptSpec[] =
     builtSpecs.length > 0
       ? builtSpecs
-      : [{ tier: tier || "free", entry: "", provider: choice.name, model: choice.model && choice.model.trim() ? choice.model : (choice.name === "pi" ? "pi" : ""), runtime: choice.name }];
+      : [{ tier: tier || "free", entry: "", provider: choice.name === "pi" && !(choice.model && choice.model.trim()) ? "opencode" : choice.name, model: choice.name === "pi" && !(choice.model && choice.model.trim()) ? "glm-5.3-flash-free" : (choice.model && choice.model.trim() ? choice.model : ""), runtime: choice.name }];
 
   const breaker = useLadder ? getBreaker(ctx.root) : { same_reason: 3, ignore: [] };
   const ignore = new Set((breaker.ignore ?? []).map((v: any) => String(v)));
@@ -243,9 +243,21 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     lastAdapterName = spec.runtime;
 
     // Budget check antes de cada tentativa.
-    const spent = ctx.spendCmd
-      ? runSpendCmd(ctx.spendCmd, ctx.plan, eventTask)
-      : computeSpendFromJsonl(ctx.root, ctx.plan, eventTask);
+    let spent: Spend;
+    try {
+      spent = ctx.spendCmd
+        ? runSpendCmd(ctx.spendCmd, ctx.plan, eventTask)
+        : computeSpendFromJsonl(ctx.root, ctx.plan, eventTask);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      try {
+        await removeWorktree(repoRoot, worktreeId);
+      } catch {}
+      emitEvent("transition", { entity: "task", from: "running", to: "blocked", by: "system", via: "cli" }, scope);
+      emitEvent("blocker", { raised_by: "manda", blocker_id: randomUUID(), question: `TASK ${eventTask} bloqueada: falha no spend-cmd (${msg})`, options: ["retry", "skip", "abort"], scope: "task" }, scope);
+      console.log(`[${eventTask}] blocked runtime=${lastAdapterName}`);
+      return { task: eventTask, runtime: lastAdapterName, passed: false, ...(lastFailure ? { failure: lastFailure } : {}) };
+    }
     const budgetCfg = loadBudgetConfig(ctx.root);
     const askOwner = loadAskOwner(ctx.root);
 

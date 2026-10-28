@@ -87,7 +87,10 @@ export function loadAskOwner(root: string): string[] {
   if (!existsSync(routingPath)) return [];
   try {
     const fm = parseFrontmatter(readFileSync(routingPath, "utf8"));
-    const raw = Array.isArray(fm.ask_owner) ? fm.ask_owner : [];
+    const top = Array.isArray(fm.ask_owner) ? fm.ask_owner : [];
+    const budget = (fm.budget as Record<string, unknown>) ?? {};
+    const nested = Array.isArray(budget.ask_owner) ? budget.ask_owner : [];
+    const raw = top.length > 0 ? top : nested;
     return raw.map((v) => String(v).trim()).filter(Boolean);
   } catch {
     return [];
@@ -141,23 +144,31 @@ export function computeSpendFromJsonl(root: string, plan: string, task: string):
 
 export function runSpendCmd(cmd: string, plan: string, task: string): Spend {
   const result: Spend = { task: 0, plan: 0, month: 0 };
+  const r = Bun.spawnSync(["bash", "-c", cmd], {
+    env: { ...process.env, MANDA_PLAN: plan, MANDA_TASK: task },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (r.exitCode !== 0) {
+    throw new Error(`spend-cmd falhou (exit ${r.exitCode}): ${r.stderr.toString().trim()}`);
+  }
+  const out = r.stdout.toString().trim();
+  const lines = out.split("\n").filter((l) => l.trim());
+  const last = lines.length ? lines[lines.length - 1]!.trim() : "";
+  let obj: any;
   try {
-    const r = Bun.spawnSync(["bash", "-c", cmd], {
-      env: { ...process.env, MANDA_PLAN: plan, MANDA_TASK: task },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const out = r.stdout.toString().trim();
-    const lines = out.split("\n").filter((l) => l.trim());
-    const last = lines.length ? lines[lines.length - 1]!.trim() : "";
-    const obj = JSON.parse(last);
-    if (obj && typeof obj === "object") {
-      result.task = Number((obj as any).task) || 0;
-      result.plan = Number((obj as any).plan) || 0;
-      result.month = Number((obj as any).month) || 0;
-    }
+    obj = JSON.parse(last);
   } catch {
-    // keep zeros on failure
+    throw new Error(`spend-cmd devolveu JSON inválido: ${last}`);
+  }
+  if (!obj || typeof obj !== "object") {
+    throw new Error("spend-cmd devolveu resposta inválida");
+  }
+  result.task = Number((obj as any).task);
+  result.plan = Number((obj as any).plan);
+  result.month = Number((obj as any).month);
+  if (!Number.isFinite(result.task) || !Number.isFinite(result.plan) || !Number.isFinite(result.month)) {
+    throw new Error("spend-cmd devolveu valores não numéricos");
   }
   return result;
 }

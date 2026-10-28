@@ -247,7 +247,9 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
     const verdictPath = join(dir, "VERDICT.json");
     writeFileSync(verdictPath, JSON.stringify({ verdict: verdict.verdict, findings: verdict.findings }));
 
-    const sealCmd = typeof project.commands.judge_seal === "string" ? project.commands.judge_seal.trim() : "";
+    const sealCmd = (typeof project.commands.judge_seal === "string" && project.commands.judge_seal.trim())
+      ? project.commands.judge_seal.trim()
+      : "pinga judge {plan} --verdict {file} --judge-model {model} --planner-model {planner}";
     let sealExit = 0;
     if (sealCmd) {
       const cmd = sealCmd
