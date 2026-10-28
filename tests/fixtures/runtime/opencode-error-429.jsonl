@@ -1,0 +1,2 @@
+{"type": "step_start", "sessionID": "ses_fix2", "part": {"type": "step-start"}}
+{"type": "error", "sessionID": "ses_fix2", "error": {"name": "APIError", "data": {"message": "429 rate limit: free usage limit reached"}}}
