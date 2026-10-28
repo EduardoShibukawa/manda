@@ -133,7 +133,6 @@ describe("manda merge: códigos de saída do gate", () => {
 
   test("13: falha de teste que a main não tem barra o merge", async () => {
     stubQueue(done);
-    writeVerdict(wtHead());
     put(
       "tests/broken.test.ts",
       'import { test, expect } from "bun:test";\ntest("broken", () => { expect(1).toBe(2); });\n',
@@ -141,6 +140,7 @@ describe("manda merge: códigos de saída do gate", () => {
     );
     git(["add", "."], wt);
     git(["commit", "-q", "-m", "test quebrado"], wt);
+    writeVerdict(wtHead()); // veredito sobre o estado final da branch, como o judge real
     const r = await run();
     expect(r.exitCode).toBe(13);
     expect(git(["rev-parse", "HEAD"])).toBe(git(["rev-parse", "main"]));
@@ -150,12 +150,14 @@ describe("manda merge: códigos de saída do gate", () => {
     // a branch comita um teste que precisa de helper.txt; o helper fica só
     // na worktree (untracked), então: branch passa, main pós-merge falha.
     stubQueue(done);
-    writeVerdict(wtHead());
     put(
       "tests/needs_helper.test.ts",
       'import { test, expect } from "bun:test";\nimport { readFileSync } from "node:fs";\ntest("helper", () => {\n  expect(readFileSync("helper.txt", "utf8").trim()).toBe("a");\n});\n',
       wt,
     );
+    git(["add", "."], wt);
+    git(["commit", "-q", "-m", "teste que precisa de helper"], wt);
+    writeVerdict(wtHead()); // veredito sobre o estado final da branch
     put("helper.txt", "a\n", wt); // untracked: não vai no merge
     const r = await run();
     expect(r.exitCode).toBe(14);
@@ -191,9 +193,9 @@ describe("manda merge: códigos de saída do gate", () => {
   });
 
   test("2: sem worktree para a branch", async () => {
-    git(["worktree", "remove", "--force", wt]);
-    writeVerdict(wtHead());
+    writeVerdict(wtHead()); // antes da remoção: wtHead() não sobrevive à worktree
     stubQueue(done);
+    git(["worktree", "remove", "--force", wt]);
     const r = await run();
     expect(r.exitCode).toBe(2);
   });
