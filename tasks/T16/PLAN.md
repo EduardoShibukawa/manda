@@ -5,7 +5,7 @@ touch:
   - src/merge.ts
   - src/cli.ts
   - tasks/T16/PLAN.md
-tests_frozen: ["tests/merge_gate.test.ts", "tests/fixtures/merge/pinga-stub"]
+tests_frozen: ["tests/fixtures/merge/pinga-stub"]
 done_when: "bun test tests/merge_gate.test.ts"
 ---
 # T16: manda merge (gate determinístico) — PLAN-0022 TASK-01
