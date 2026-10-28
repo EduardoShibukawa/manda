@@ -144,8 +144,8 @@ export function buildAttemptPlan(root: string, startTier: string): EscalationAtt
   const attempts: EscalationAttempt[] = [];
   for (let i = startIdx; i < ladder.length; i += 1) {
     const entry = ladder[i]!;
-    // strong automático só quando a política do dono prevê runtime_claude (budget/ask_owner).
-    if (entry.tier === "strong" && startTier !== "strong" && !(escalation.askOwner ?? []).includes("runtime_claude")) break;
+    // strong nunca é automático: só quando a TASK pede tier strong explicitamente.
+    if (entry.tier === "strong" && startTier !== "strong") break;
     const candidates = poolMap[entry.tier] ?? [];
     let usedInTier = 0;
     // Try candidates in order, skip if already tried

@@ -245,7 +245,37 @@ export async function planFromArtifact(
 
   const project = loadProject(root);
   const runtimes = (project.runtimes ?? {}) as Record<string, unknown>;
-  const plannerSpec = typeof runtimes.planner === "string" ? (runtimes.planner as string).trim() : "";
+  let plannerSpec = typeof runtimes.planner === "string" ? (runtimes.planner as string).trim() : "";
+
+  // Fallback: resolve Planner pelo pool do ROUTING.md quando [runtimes].planner ausente.
+  if (!plannerSpec) {
+    const raw = Bun.TOML.parse(readFileSync(join(root, ".ginga", "project.toml"), "utf8")) as Record<string, unknown> || {};
+    const routing = (raw.routing as Record<string, unknown>) ?? {};
+    const configured = typeof routing.models === "string" ? (routing.models as string).trim() : ".ginga/models";
+    const modelsDir = isAbsolute(configured) ? configured : join(root, configured);
+    const routingPath = join(modelsDir, "ROUTING.md");
+    if (existsSync(routingPath)) {
+      const fm = parseFrontmatter(readFileSync(routingPath, "utf8"));
+      const pools = (fm.pools as Record<string, unknown>) ?? {};
+      const plannerPool = pools.planner;
+      if (Array.isArray(plannerPool) && plannerPool.length > 0) {
+        const first = String(plannerPool[0]).trim();
+        if (first.includes("/")) {
+          const { provider } = splitEntry(first);
+          const runtime = runtimeForProvider(provider);
+          plannerSpec = `${runtime}:${first}`;
+        } else {
+          const provider = first.startsWith("claude") ? "claude"
+            : first.startsWith("codex") || first.startsWith("gpt") || first.startsWith("o") ? "codex"
+            : first.startsWith("gemini") ? "agy"
+            : first;
+          const runtime = runtimeForProvider(provider);
+          plannerSpec = `${runtime}:${provider}/${first}`;
+        }
+      }
+    }
+  }
+
   if (!plannerSpec) {
     console.error("Configure [runtimes] em .ginga/project.toml");
     console.error("[runtimes]");

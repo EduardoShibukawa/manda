@@ -173,6 +173,11 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
     attempts.map((a) => (typeof a.family === "string" ? a.family : "")).filter(Boolean),
   );
 
+  // Fail-closed: sem família do executor conhecida, não escolhe juiz.
+  if (attemptFamilies.size === 0) {
+    return { exitCode: 1 };
+  }
+
   const costTotal = attempts.reduce((acc, a) => acc + (typeof a.cost_usd === "number" ? (a.cost_usd as number) : 0), 0);
 
   let chosen: { provider: string; model: string; runtime: string } | null = null;

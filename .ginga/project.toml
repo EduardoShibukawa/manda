@@ -2,4 +2,4 @@
 models = ".ginga/models"
 
 [runtimes]
-executor = "opencode:opencode-go/beam-free"
+executor = "opencode:opencode/glm-5.3-flash-free"

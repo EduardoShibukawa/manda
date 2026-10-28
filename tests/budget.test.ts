@@ -287,7 +287,7 @@ describe("OK do dono", () => {
     const free = scripted([{ r: "timeout", cost: 0.21 }, { r: "gate", cost: 0.21 }]);
     const r = await runPlan(free, { approve: ["task"] });
     expect(r.exitCode).toBe(1);
-    expect(free.calls.length).toBe(5); // escada inteira, sem parar no teto da TASK
+    expect(free.calls.length).toBe(4); // escada inteira (sem strong automático), sem parar no teto da TASK
     expect(blockers().filter((b) => b.data.scope === "task").length).toBe(0);
   });
 
@@ -304,7 +304,7 @@ describe("OK do dono", () => {
     process.env.MANDA_APPROVED_SCOPES = "plan,task";
     const rt = scripted([{ r: "timeout", cost: 0.21 }, { r: "gate", cost: 0.21 }]);
     await runPlan(rt);
-    expect(rt.calls.length).toBe(5);
+    expect(rt.calls.length).toBe(4);
   });
 
   test("próximo candidato claude pede OK e não roda", async () => {
@@ -327,14 +327,8 @@ describe("OK do dono", () => {
     expect(yes.calls[0]!.model).toBe("claude-sonnet-5-5");
   });
 
-  test("a escada que cai no claude para ali: free×2, medium×2 e pede OK antes da 5ª", async () => {
-    setup({ strong: "claude/claude-sonnet-5-5" });
-    const rt = scripted([{ r: "timeout", cost: 0 }, { r: "gate", cost: 0 }, { r: "timeout", cost: 0 }, { r: "gate", cost: 0 }]);
-    const r = await runPlan(rt);
-    expect(r.exitCode).toBe(1);
-    expect(rt.calls.length).toBe(4);
-    expect(blockers()[0]!.data.scope).toBe("runtime_claude");
-  });
+  // Cenário obsoleto após a proibição de escalada automática para strong
+  // (PLAN-0008 TASK-04 emenda 2026-10-28): strong só com tier: strong explícito.
 });
 
 describe("manda run (CLI)", () => {
