@@ -1,0 +1,5 @@
+[routing]
+models = ".ginga/models"
+
+[runtimes]
+executor = "opencode:opencode/glm-5.3-flash-free"
