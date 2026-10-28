@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { routeMain } from "./routing";
 
 import { CycleError, loadBundle, resolvePlanDir } from "./bundle";
+import { runMerge } from "./merge";
 
 export interface VersionJson {
   schema_version: number;
@@ -42,6 +43,16 @@ export function run(args: string[]): number {
       stderr: "inherit",
     });
     return child.exitCode ?? 1;
+  }
+
+  if (command === "merge") {
+    const positional = rest.filter((a) => !a.startsWith("--"));
+    const [planArg, repoArg, branchArg] = positional;
+    if (!planArg || !repoArg || !branchArg) {
+      console.error("Usage: manda merge <PLAN> <repo> <branch> [--json]");
+      return 2;
+    }
+    return runMerge({ plan: planArg, repo: repoArg, branch: branchArg }).exitCode;
   }
 
   if (command === "judge") {

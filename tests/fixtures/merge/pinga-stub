@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stub de `pinga` para os testes de tests/merge_gate.test.ts.
+# `queue`  -> imprime o JSON apontado por STUB_QUEUE_FILE (default: {"tasks":[]})
+# `ledger` -> exit $STUB_LEDGER_EXIT (default 0)
+set -u
+case "${1:-}" in
+  queue) cat "${STUB_QUEUE_FILE:-/dev/null}" || echo '{"tasks":[]}';;
+  ledger) exit "${STUB_LEDGER_EXIT:-0}";;
+esac
+exit 0
