@@ -224,7 +224,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const attemptSpecs: AttemptSpec[] =
     builtSpecs.length > 0
       ? builtSpecs
-      : [{ tier: tier || "free", entry: "", provider: choice.name, model: choice.model ?? "", runtime: choice.name }];
+      : [{ tier: tier || "free", entry: "", provider: choice.name, model: choice.model && choice.model.trim() ? choice.model : (choice.name === "pi" ? "pi" : ""), runtime: choice.name }];
 
   const breaker = useLadder ? getBreaker(ctx.root) : { same_reason: 3, ignore: [] };
   const ignore = new Set((breaker.ignore ?? []).map((v: any) => String(v)));
