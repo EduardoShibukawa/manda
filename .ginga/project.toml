@@ -1,0 +1,5 @@
+[routing]
+models = ".ginga/models"
+
+[runtimes]
+executor = "opencode:opencode-go/beam-free"

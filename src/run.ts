@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
 import { loadBundle, resolvePlanDir, type TaskDoc } from "./bundle";
 import { emitEvent, type EventScope } from "./events";
-import { runGate } from "./gate";
+import { appendSpend, computeSpendFromJsonl, loadAskOwner, loadBudgetConfig, runSpendCmd } from "./budget";
+import { buildAttemptPlan, getBreaker, hasFixedRuntime, loadEscalation } from "./escalation";import { runGate } from "./gate";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import type { FailureKind, RunRequest, RunResult, RuntimeAdapter } from "./runtime/port";
@@ -29,6 +31,8 @@ export interface RunOptions {
   /** Roda só esta TASK (id completo ou `TASK-NN`). */
   task?: string;
   resolveRuntime?: ResolveRuntime;
+  spendCmd?: string;
+  approve?: string | string[];
 }
 
 export interface TaskOutcome {
@@ -55,6 +59,8 @@ interface TaskContext {
   meta: PlanMeta;
   runtimes: Record<string, unknown>;
   resolve: ResolveRuntime;
+  spendCmd?: string;
+  approved: Set<string>;
 }
 
 interface RuntimeChoice {
@@ -188,8 +194,11 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const fullId = String(task.task);
   const eventTask = shortTaskId(fullId);
   const repoRoot = repoOf(task, ctx.root);
+  const tier = stringField(task, "tier");
+  const fixed = hasFixedRuntime(ctx.root, tier);
+  const escalation = fixed ? null : loadEscalation(ctx.root);
   const choice = pickRuntime(task, ctx.runtimes);
-  const adapter = ctx.resolve(choice.name);
+
   const scope: EventScope = {
     repo: basename(repoRoot),
     plan: ctx.plan,
@@ -203,97 +212,243 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     scope,
   );
 
-  // Id da worktree/branch é estável e minúsculo: `.worktrees/wt-task-01-a`.
   const worktreeId = fullId.toLowerCase();
   const worktree = await createWorktree(repoRoot, worktreeId, BASE_BRANCH);
 
-  const request: RunRequest = {
-    worktree: worktree.path,
-    prompt: formatTaskPrompt(task, {
-      plan: ctx.plan,
-      repo: repoRoot,
-      worktree: worktree.path,
-    }),
-    role: "executor",
-  };
-  if (choice.model) request.model = choice.model;
+  type AttemptSpec = { tier: string; entry: string; provider: string; model: string; runtime: string };
+  let builtSpecs: AttemptSpec[] = [];
+  if (!fixed && escalation) {
+    builtSpecs = buildAttemptPlan(ctx.root, tier || "free") as AttemptSpec[];
+  }
+  const useLadder = builtSpecs.length > 0;
+  const attemptSpecs: AttemptSpec[] =
+    builtSpecs.length > 0
+      ? builtSpecs
+      : [{ tier: tier || "free", entry: "", provider: choice.name, model: choice.model ?? "", runtime: choice.name }];
 
-  const started = Date.now();
-  let result: RunResult;
-  try {
-    result = await adapter.run(request);
-  } catch (error) {
-    // Adapter que explode é falha de infraestrutura, não da TASK.
-    result = {
-      passed: false,
-      failure: "infra",
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
+  const breaker = useLadder ? getBreaker(ctx.root) : { same_reason: 3, ignore: [] };
+  const ignore = new Set((breaker.ignore ?? []).map((v: any) => String(v)));
+
+  let passed = false;
+  let failure: FailureKind | undefined;
+  let lastAdapterName = attemptSpecs[0]!.runtime;
+  let lastFailure: FailureKind | undefined;
+  let breakerTripped = false;
+  let streakFailure: FailureKind | undefined;
+  let streakCount = 0;
+  let attemptNo = 0;
+
+  for (const spec of attemptSpecs) {
+    attemptNo += 1;
+    lastAdapterName = spec.runtime;
+
+    // Budget check antes de cada tentativa.
+    const spent = ctx.spendCmd
+      ? runSpendCmd(ctx.spendCmd, ctx.plan, eventTask)
+      : computeSpendFromJsonl(ctx.root, ctx.plan, eventTask);
+    const budgetCfg = loadBudgetConfig(ctx.root);
+    const askOwner = loadAskOwner(ctx.root);
+
+    const scopes = [
+      { scope: "task", spent: spent.task, cap: budgetCfg.task_usd },
+      { scope: "plan", spent: spent.plan, cap: budgetCfg.plan_usd },
+      { scope: "month", spent: spent.month, cap: budgetCfg.month_usd },
+    ];
+
+    let blockedScope: string | null = null;
+    for (const sc of scopes) {
+      if (!Number.isFinite(sc.cap)) continue;
+      if (ctx.approved.has(sc.scope)) continue;
+      if (sc.spent >= sc.cap) {
+        blockedScope = sc.scope;
+        emitEvent("budget", { level: "cap", scope: sc.scope, cap_usd: sc.cap, spent_usd: sc.spent }, scope);
+        break;
+      }
+    }
+    if (!blockedScope) {
+      for (const sc of scopes) {
+        if (!Number.isFinite(sc.cap)) continue;
+        if (ctx.approved.has(sc.scope)) continue;
+        const warnAt = (budgetCfg.warn_pct / 100) * sc.cap;
+        if (sc.spent >= warnAt && sc.spent < sc.cap) {
+          emitEvent("budget", { level: "warn", scope: sc.scope, cap_usd: sc.cap, spent_usd: sc.spent }, scope);
+        }
+      }
+    }
+
+    if (blockedScope) {
+      try {
+        await removeWorktree(repoRoot, worktreeId);
+      } catch {}
+      emitEvent("transition", { entity: "task", from: "running", to: "blocked", by: "system", via: "cli" }, scope);
+      emitEvent("blocker", { raised_by: "manda", blocker_id: randomUUID(), question: `TASK ${eventTask} bloqueada por teto de budget (${blockedScope})`, options: ["retry", "skip", "abort"], scope: blockedScope }, scope);
+      console.log(`[${eventTask}] blocked runtime=${lastAdapterName}`);
+      return { task: eventTask, runtime: lastAdapterName, passed: false, ...(lastFailure ? { failure: lastFailure } : {}) };
+    }
+
+    // OK do dono para runtime claude.
+    if (spec.runtime === "claude" && !ctx.approved.has("runtime_claude") && askOwner.includes("runtime_claude")) {
+      try {
+        await removeWorktree(repoRoot, worktreeId);
+      } catch {}
+      emitEvent("transition", { entity: "task", from: "running", to: "blocked", by: "system", via: "cli" }, scope);
+      emitEvent("blocker", { raised_by: "manda", blocker_id: randomUUID(), question: `TASK ${eventTask} requer OK para runtime claude`, options: ["retry", "skip", "abort"], scope: "runtime_claude" }, scope);
+      console.log(`[${eventTask}] blocked runtime=${lastAdapterName}`);
+      return { task: eventTask, runtime: lastAdapterName, passed: false, ...(lastFailure ? { failure: lastFailure } : {}) };
+    }
+
+    const adapter = ctx.resolve(spec.runtime);
+    lastAdapterName = adapter.name;
+
+    const request: RunRequest = {
+      worktree: worktree.path,
+      prompt: formatTaskPrompt(task, {
+        plan: ctx.plan,
+        repo: repoRoot,
+        worktree: worktree.path,
+      }),
+      role: "executor",
     };
-  }
-  const durationMs = Date.now() - started;
+    if (spec.model) request.model = spec.model;
+    if (spec.provider) request.provider = spec.provider;
 
-  let passed = result.passed;
-  let failure: FailureKind | undefined = passed ? undefined : (result.failure ?? "infra");
-
-  if (passed) {
-    const gate = await runGate({
-      task: `${ctx.plan}/${eventTask}`,
-      plan: ctx.plan,
-      repo: repoRoot,
-      worktree: worktree.path,
-      doneWhen: stringField(task, "done_when"),
-      base: BASE_BRANCH,
-      testsFrozen: listField(task, "tests_frozen"),
-    });
-    if (!gate.passed) {
-      passed = false;
-      failure = "done_when";
-    }
-  }
-
-  if (passed) {
+    const started = Date.now();
+    let result: RunResult;
     try {
-      await mergeWorktreeToTrunk(repoRoot, worktreeId, BASE_BRANCH);
-      await removeWorktree(repoRoot, worktreeId);
+      result = await adapter.run(request);
     } catch (error) {
-      passed = false;
-      failure = "infra";
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`merge falhou para ${eventTask}: ${message}`);
+      result = {
+        passed: false,
+        failure: "infra",
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error),
+      };
     }
-  }
+    const durationMs = Date.now() - started;
 
-  const model = result.model ?? choice.model;
-  const usage = result.usage;
+    let attemptPassed = result.passed;
+    let attemptFailure: FailureKind | undefined = attemptPassed ? undefined : (result.failure ?? "infra");
 
-  emitEvent(
-    "attempt",
-    {
-      runtime: adapter.name,
-      ...(model ? { model } : {}),
-      family: adapter.family(model ?? ""),
-      tier: stringField(task, "tier"),
-      attempt_n: 1,
-      passed,
-      ...(failure ? { failure } : {}),
-      duration_ms: durationMs,
-      tokens_in: usage?.inputTokens ?? 0,
-      tokens_out: usage?.outputTokens ?? 0,
+    if (attemptPassed) {
+      const gate = await runGate({
+        task: `${ctx.plan}/${eventTask}`,
+        plan: ctx.plan,
+        repo: repoRoot,
+        worktree: worktree.path,
+        doneWhen: stringField(task, "done_when"),
+        base: BASE_BRANCH,
+        testsFrozen: listField(task, "tests_frozen"),
+      });
+      if (!gate.passed) {
+        attemptPassed = false;
+        attemptFailure = "done_when";
+      }
+    }
+
+    if (attemptPassed) {
+      try {
+        await mergeWorktreeToTrunk(repoRoot, worktreeId, BASE_BRANCH);
+        await removeWorktree(repoRoot, worktreeId);
+      } catch (error) {
+        attemptPassed = false;
+        attemptFailure = "infra";
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`merge falhou para ${eventTask}: ${message}`);
+      }
+    }
+
+    passed = attemptPassed;
+    failure = attemptFailure;
+    lastFailure = attemptFailure;
+
+    const model = result.model ?? (spec.model || undefined);
+    const usage = result.usage;
+
+    appendSpend(ctx.root, {
+      ts: new Date().toISOString(),
+      plan: ctx.plan,
+      task: eventTask,
       cost_usd: result.costUsd ?? 0,
       cost_source: result.costUsd === undefined ? "unknown" : "metered",
-    },
-    scope,
-  );
+    });
+
+    emitEvent(
+      "attempt",
+      {
+        runtime: adapter.name,
+        ...(model ? { model } : {}),
+        family: adapter.family(model ?? ""),
+        tier: spec.tier,
+        attempt_n: attemptNo,
+        passed,
+        ...(failure ? { failure } : {}),
+        duration_ms: durationMs,
+        tokens_in: usage?.inputTokens ?? 0,
+        tokens_out: usage?.outputTokens ?? 0,
+        cost_usd: result.costUsd ?? 0,
+        cost_source: result.costUsd === undefined ? "unknown" : "metered",
+      },
+      scope,
+    );
+
+    if (passed) {
+      emitEvent(
+        "transition",
+        { entity: "task", from: "running", to: "done", by: "system", via: "cli" },
+        scope,
+      );
+      console.log(`[${eventTask}] ok runtime=${adapter.name}`);
+      return { task: eventTask, runtime: adapter.name, passed: true };
+    }
+
+    const f = attemptFailure as FailureKind;
+    if (ignore.has(f)) {
+      streakFailure = undefined;
+      streakCount = 0;
+    } else {
+      if (f === streakFailure) streakCount += 1;
+      else {
+        streakFailure = f;
+        streakCount = 1;
+      }
+      if (streakCount >= (breaker.same_reason ?? 3)) {
+        breakerTripped = true;
+      }
+    }
+
+    if (breakerTripped) break;
+  }
+
+  if (useLadder || breakerTripped) {
+    emitEvent(
+      "transition",
+      { entity: "task", from: "running", to: "blocked", by: "system", via: "cli" },
+      scope,
+    );
+    if (!ctx.approved.has("task")) {
+      emitEvent(
+        "blocker",
+        {
+          raised_by: "manda",
+          blocker_id: randomUUID(),
+          question: `TASK ${eventTask} bloqueada após ${attemptNo} tentativa(s)`,
+          options: ["retry", "skip", "abort"],
+          scope: "task",
+        },
+        scope,
+      );
+    }
+    console.log(`[${eventTask}] blocked runtime=${lastAdapterName}`);
+    return { task: eventTask, runtime: lastAdapterName, passed: false, ...(lastFailure ? { failure: lastFailure } : {}) };
+  }
 
   emitEvent(
     "transition",
-    { entity: "task", from: "running", to: passed ? "done" : "failed", by: "system", via: "cli" },
+    { entity: "task", from: "running", to: "failed", by: "system", via: "cli" },
     scope,
   );
-
-  console.log(`[${eventTask}] ${passed ? "ok" : `falhou (${failure})`} runtime=${adapter.name}`);
-  return { task: eventTask, runtime: adapter.name, passed, ...(failure ? { failure } : {}) };
+  console.log(`[${eventTask}] falhou (${failure}) runtime=${lastAdapterName}`);
+  return { task: eventTask, runtime: lastAdapterName, passed: false, ...(failure ? { failure } : {}) };
 }
 
 /**
@@ -317,12 +472,33 @@ export async function runPlan(opts: RunOptions): Promise<RunSummary> {
     return { exitCode: 2, plan, results: [] };
   }
 
+  const approved = new Set<string>();
+  const approveRaw = opts.approve;
+  const approveList = Array.isArray(approveRaw)
+    ? approveRaw
+    : typeof approveRaw === "string"
+      ? approveRaw.split(",")
+      : [];
+  for (const s of approveList) {
+    const t = String(s).trim();
+    if (t) approved.add(t);
+  }
+  const envApproved = process.env.MANDA_APPROVED_SCOPES;
+  if (envApproved) {
+    for (const s of envApproved.split(",")) {
+      const t = s.trim();
+      if (t) approved.add(t);
+    }
+  }
+
   const ctx: TaskContext = {
     root,
     plan,
     meta: planMeta(dir),
     runtimes: loadProject(root).runtimes,
     resolve: opts.resolveRuntime ?? defaultResolveRuntime,
+    spendCmd: opts.spendCmd,
+    approved,
   };
 
   const results: TaskOutcome[] = [];
@@ -347,25 +523,35 @@ interface CliArgs {
   plan: string;
   root: string;
   task?: string;
+  approve?: string;
+  spendCmd?: string;
 }
 
 function parseCli(argv: string[]): CliArgs | null {
   let plan: string | undefined;
   let root = process.cwd();
   let task: string | undefined;
+  let approve: string | undefined;
+  let spendCmd: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (arg === "--root" || arg === "--task") {
+    if (arg === "--root" || arg === "--task" || arg === "--approve" || arg === "--spend-cmd") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) return null;
       if (arg === "--root") root = value;
-      else task = value;
+      else if (arg === "--task") task = value;
+      else if (arg === "--approve") approve = value;
+      else spendCmd = value;
       i += 1;
     } else if (arg.startsWith("--root=")) {
       root = arg.slice("--root=".length);
     } else if (arg.startsWith("--task=")) {
       task = arg.slice("--task=".length);
+    } else if (arg.startsWith("--approve=")) {
+      approve = arg.slice("--approve=".length);
+    } else if (arg.startsWith("--spend-cmd=")) {
+      spendCmd = arg.slice("--spend-cmd=".length);
     } else if (arg.startsWith("-")) {
       return null;
     } else if (plan === undefined) {
@@ -375,7 +561,7 @@ function parseCli(argv: string[]): CliArgs | null {
     }
   }
 
-  return plan ? { plan, root, ...(task ? { task } : {}) } : null;
+  return plan ? { plan, root, ...(task ? { task } : {}), ...(approve ? { approve } : {}), ...(spendCmd ? { spendCmd } : {}) } : null;
 }
 
 /** Entry da CLI `manda run` (o `bin/manda.ts` delega para cá num subprocesso). */
@@ -385,7 +571,13 @@ export async function main(argv: string[]): Promise<number> {
     console.error(USAGE);
     return 2;
   }
-  const summary = await runPlan(parsed);
+  const summary = await runPlan({
+    root: parsed.root,
+    plan: parsed.plan,
+    task: parsed.task,
+    approve: parsed.approve,
+    spendCmd: parsed.spendCmd,
+  });
   return summary.exitCode;
 }
 

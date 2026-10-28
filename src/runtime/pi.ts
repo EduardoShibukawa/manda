@@ -145,8 +145,22 @@ export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): R
     name: "pi",
     family: modelFamily,
     async run(req: RunRequest): Promise<RunResult> {
-      const provider = req.provider || "opencode-go";
-      const model = req.model || "qwen3.8-flash";
+      // Falha fechada (INTENT-0008): sem rota explícita o `pi` não é spawnado.
+      // O `pickRuntime` de run.ts já resolve a rota; o adapter só recebe
+      // provider/modelo explícitos, de [runtimes] no project.toml ou do request.
+      if (!req.provider || !req.model) {
+        const msg =
+          "[runtimes] rota ausente para o pi: provider e modelo são obrigatórios; configure a rota em [runtimes] no project.toml ou passe provider/model no request.";
+        return {
+          passed: false,
+          failure: "infra",
+          stdout: "",
+          stderr: msg,
+          resultText: msg,
+        };
+      }
+      const provider = req.provider;
+      const model = req.model;
       const timeoutMs = req.timeoutMs || 180_000;
       const args = ["--no-session", "--mode", "json", "--provider", provider, "--model", model, "-p", req.prompt];
       const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs });
