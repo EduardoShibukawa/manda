@@ -1,1 +1,0 @@
-/home/shibuka/Projetos/duh-homelab/.ginga/models/ROUTING.md
