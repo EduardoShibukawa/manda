@@ -14,6 +14,7 @@ import { basename, isAbsolute, join } from "node:path";
  *   13 falha de teste nova na branch que a main não tem
  *   14 main ganhou falha depois do merge -> `git revert -m 1` automático
  *   15 merge feito, mas `pinga ledger verify` falhou (merge fica)
+ *   16 o revert falhou (CRÍTICO)
  */
 
 export interface MergeOptions {
@@ -201,12 +202,18 @@ export function runMerge(opts: MergeOptions): MergeResult {
   // --- 14: main piorou depois do merge -> revert automático
   const extraMain = slug(testFails(repo));
   if (extraMain) {
-    // sem -q: git revert (≥2.50) não aceita quiet (uso 129) e o revert falharia em silêncio
-    const revert = git(["revert", "-m", "1", "--no-edit", "HEAD"]);
+    // MERGE_GATE=1 para o hook reference-transaction do ginga não bloquear o revert
+    // (sem -q: git revert (≥2.50) não aceita quiet (uso 129)).
+    const revert = Bun.spawnSync(["git", "revert", "-m", "1", "--no-edit", "HEAD"], {
+      cwd: repo,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, MERGE_GATE: "1" },
+    });
     if (revert.exitCode !== 0) {
       const warn = `AVISO: git revert falhou (exit ${revert.exitCode}): ${revert.stderr.toString().trim()}`;
       console.warn(warn);
-      return finish(14, `main ganhou falha apos merge; revert FALHOU: ${extraMain}; ${warn}`);
+      return finish(16, `main ganhou falha apos merge e o REVERT FALHOU (CRÍTICO): ${extraMain}; ${warn}`);
     }
     return finish(14, `main ganhou falha apos merge, revertido: ${extraMain}`);
   }
