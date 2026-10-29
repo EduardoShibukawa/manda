@@ -1,0 +1,32 @@
+{
+  "focal_node": {
+    "id": "contract:src/app.ts:Greeter",
+    "kind": "Contract",
+    "name": "Greeter",
+    "description": "TypeScript class Greeter with 2 methods",
+    "metadata": {
+      "bases": null,
+      "declared_file": "src/app.ts",
+      "language": "typescript",
+      "ts_kind": "class"
+    },
+    "evidence": [
+      {
+        "locator": {
+          "repo": "local",
+          "commit_sha": "113fa58cd7b6864203a93c3e2549a258adfe7d2d",
+          "path": "src/app.ts",
+          "start_line": 5,
+          "end_line": 11
+        },
+        "origin": "extracted",
+        "rule_id": "typescript-ast",
+        "status": "current",
+        "discovered_at": "2026-10-29T11:11:17Z"
+      }
+    ]
+  },
+  "tier": "summary",
+  "neighbors": [],
+  "relationships": []
+}

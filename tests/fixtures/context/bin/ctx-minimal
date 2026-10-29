@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# provedor custom no estilo credential helper (doc 02 §2): <provider> <cap> <arg> --json.
+# Só fala "capabilities" e "outline" (no schema único); o resto degrada com exit != 0.
+set -u
+cmd="${1:-}"
+case "$cmd" in
+  capabilities) echo '["outline"]' ;;
+  outline) echo '{"schema_version":1,"provider":"ctx-minimal","capability":"outline","items":[{"path":"x.ts","line":1,"symbol":"x","kind":"function","text":"export function x() {}"}]}' ;;
+  *) echo "not available" >&2; exit 1 ;;
+esac

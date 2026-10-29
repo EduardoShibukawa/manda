@@ -1,0 +1,76 @@
+[
+  {
+    "id": "contract:src/app.ts:Greeter",
+    "kind": "Contract",
+    "name": "Greeter",
+    "description": "TypeScript class Greeter with 2 methods",
+    "metadata": {
+      "bases": null,
+      "declared_file": "src/app.ts",
+      "language": "typescript",
+      "methods": [
+        {
+          "line": 6,
+          "name": "constructor",
+          "parameters": "private prefix: string",
+          "return_type": ""
+        },
+        {
+          "line": 8,
+          "name": "shout",
+          "parameters": "name: string",
+          "return_type": "string"
+        }
+      ],
+      "ts_kind": "class"
+    },
+    "evidence": [
+      {
+        "locator": {
+          "repo": "local",
+          "commit_sha": "head",
+          "path": "src/app.ts",
+          "start_line": 5,
+          "end_line": 11
+        },
+        "origin": "extracted",
+        "rule_id": "typescript-ast",
+        "status": "current",
+        "discovered_at": "2026-10-29T11:12:46.494314059Z"
+      }
+    ]
+  },
+  {
+    "id": "lib:src/app.ts:app",
+    "kind": "Library",
+    "name": "app",
+    "description": "TypeScript module app with 1 functions",
+    "metadata": {
+      "functions": [
+        {
+          "line": 1,
+          "name": "greet",
+          "parameters": "name: string",
+          "return_type": "string"
+        }
+      ],
+      "imports": null,
+      "language": "typescript"
+    },
+    "evidence": [
+      {
+        "locator": {
+          "repo": "local",
+          "commit_sha": "head",
+          "path": "src/app.ts",
+          "start_line": 1,
+          "end_line": 14
+        },
+        "origin": "extracted",
+        "rule_id": "typescript-module-ast",
+        "status": "current",
+        "discovered_at": "2026-10-29T11:12:46.494314059Z"
+      }
+    ]
+  }
+]
