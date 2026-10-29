@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 import { runJudge } from "./judge_run";
@@ -79,16 +79,89 @@ export function loadSupervisorModels(root: string): string[] {
   return DEFAULT_MODELS;
 }
 
-export function killByPid(pid: number): boolean {
+export interface SupervisorConfig {
+  operatorModels: string[];
+  executorModels?: string[];
+  env: Record<string, string>;
+}
+
+/** Lê `[supervisor]` de `<root>/.ginga/project.toml`: `operator_models` ?? `models` ?? DEFAULT_MODELS; `executor_models` opcional; `[supervisor.env]` como strings. */
+export function loadSupervisorConfig(root: string): SupervisorConfig {
+  const cfg: SupervisorConfig = { operatorModels: DEFAULT_MODELS, env: {} };
   try {
-    process.kill(pid, "SIGKILL");
+    const toml = Bun.TOML.parse(readFileSync(join(root, ".ginga", "project.toml"), "utf8")) as {
+      supervisor?: { models?: unknown; operator_models?: unknown; executor_models?: unknown; env?: unknown };
+    };
+    const s = toml?.supervisor;
+    if (s) {
+      const strs = (v: unknown): string[] | undefined =>
+        Array.isArray(v) && v.length > 0 && v.every((m) => typeof m === "string") ? (v as string[]) : undefined;
+      cfg.operatorModels = strs(s.operator_models) ?? strs(s.models) ?? DEFAULT_MODELS;
+      cfg.executorModels = strs(s.executor_models);
+      if (s.env && typeof s.env === "object" && !Array.isArray(s.env)) {
+        for (const [k, v] of Object.entries(s.env as Record<string, unknown>)) cfg.env[k] = String(v);
+      }
+    }
+  } catch {}
+  return cfg;
+}
+
+/** Env do operador: process.env sem MODELS, + MODELS=<executor_models join " "> se houver, + [supervisor.env]. */
+function operatorEnv(cfg: SupervisorConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && k !== "MODELS") env[k] = v;
+  }
+  if (cfg.executorModels && cfg.executorModels.length > 0) env.MODELS = cfg.executorModels.join(" ");
+  return { ...env, ...cfg.env };
+}
+
+function gitSafe(args: string[], cwd: string): string {
+  try {
+    const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    return r.stdout.toString().trim();
+  } catch {
+    return "";
+  }
+}
+
+/** Estado da lane: sha da branch de cada ready/<repo>.json + HEADs dos worktrees do backlog + hash do backlog + effects. */
+export function laneState(root: string, repo: string, repoName: string, effects: number): string {
+  const lines: string[] = [];
+  for (const rf of readys(root, repoName)) {
+    lines.push(rf + " " + gitSafe(["rev-parse", String(branchOf(rf) || "")], repo));
+  }
+  const blPath = join(root, ".ginga", "prompts", "backlog-" + repoName + ".md");
+  if (existsSync(blPath)) {
+    const text = readFileSync(blPath, "utf8");
+    for (const m of text.matchAll(/^- worktree: *([^ ]+)/gm)) {
+      lines.push(m[1] + " " + gitSafe(["rev-parse", "HEAD"], join(root, m[1])));
+    }
+    lines.push("backlog " + Bun.hash(text).toString(16));
+  }
+  lines.push("effects " + effects);
+  return lines.join("\n");
+}
+
+export function killByPid(pid: number): boolean {
+  // mata também o filho do `timeout`: grupo do pid e filhos diretos (pkill -P)
+  try {
+    Bun.spawnSync(["pkill", "-KILL", "-P", String(pid)], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  } catch {}
+  try {
+    process.kill(-pid, "SIGKILL");
     return true;
   } catch {
     try {
-      process.kill(pid, "SIGTERM");
+      process.kill(pid, "SIGKILL");
       return true;
     } catch {
-      return false;
+      try {
+        process.kill(pid, "SIGTERM");
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 }
@@ -174,7 +247,8 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
   const repoName = basename(repo);
   const rounds = opts.rounds ?? 6;
   const scope = { repo: repoName };
-  const models = opts.models ?? loadSupervisorModels(root);
+  const cfg = loadSupervisorConfig(root);
+  const models = opts.models ?? cfg.operatorModels;
   let modelIndex = 0;
   const idleThresholdMs = opts.idleThresholdMs ?? 15 * 60 * 1000;
   const pollMs = opts.pollMs ?? 60000;
@@ -214,17 +288,29 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
 
     const main0 = git(["rev-parse", "main"], repo);
     const roundStartMs = Date.now();
+    const stateBefore = laneState(root, repo, repoName, effects);
+    let stuck = false;
 
     if (!opts.skipOperator && !process.env.MANDA_PIPELINE_SKIP_OPERATOR) {
       const model = models[modelIndex];
-      const opCmd = ["opencode", "run", "--standalone", "--auto", "-m", model, "--title", name, content];
+      const opCmd = model.startsWith("claude/")
+        ? [
+            "timeout", "7200", "claude", "-p",
+            "--model", model.slice("claude/".length),
+            "--permission-mode", "auto",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--append-system-prompt", "lane:" + name,
+            content,
+          ]
+        : ["timeout", "7200", "opencode", "run", "--standalone", "--auto", "-m", model, "--title", name, content];
       const logPath = join(root, ".ginga", "handoffs", name + ".log");
       try { mkdirSync(dirname(logPath), { recursive: true }); } catch {}
       writeFileSync(logPath, "");
 
       let proc: any = null;
       try {
-        proc = Bun.spawn(opCmd, { cwd: root, stdout: "pipe", stderr: "pipe", env: process.env });
+        proc = Bun.spawn(opCmd, { cwd: root, stdout: "pipe", stderr: "pipe", env: operatorEnv(cfg) });
       } catch {
         proc = null;
       }
@@ -240,8 +326,7 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
             try { appendFileSync(logPath, dec.decode(value)); } catch {}
           }
         };
-        pump(proc.stdout);
-        pump(proc.stderr);
+        const pumps = [pump(proc.stdout), pump(proc.stderr)];
 
         let lastProgressBytes = 0;
         let idle = 0;
@@ -259,12 +344,39 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
           }
           if (idle >= idleThresholdMs) {
             killByPid(proc.pid);
+            stuck = true;
             modelIndex = (modelIndex + 1) % models.length;
             emitEvent("lane.round", { round: i, status: "infra_stuck", killedPid: proc.pid }, scope);
             break;
           }
         }
         try { await proc.exited; } catch {}
+        // espera o fim da escrita do log (pump) antes de ler, com limite de 2 s
+        try { await Promise.race([Promise.allSettled(pumps), Bun.sleep(2000)]); } catch {}
+
+        // cota esgotada: log curto citando o erro de cota → próximo modelo, repete a rodada
+        let quota = false;
+        try {
+          if (statSync(logPath).size < 6000) {
+            const text = readFileSync(logPath, "utf8");
+            if (/free usage limit|usage limit (reached|exceeded)|quota (exceeded|reached)/i.test(text)) quota = true;
+          }
+        } catch {}
+        if (quota) {
+          modelIndex += 1;
+          if (modelIndex >= models.length) {
+            try {
+              mkdirSync(join(root, ".ginga", "handoffs"), { recursive: true });
+              writeFileSync(join(root, ".ginga", "handoffs", ".free-esgotado"), "");
+            } catch {}
+            const msg = "todos os modelos sem cota: lane pausada; o vigia tenta de novo em 1 h";
+            emitEvent("lane.round", { round: i, status: "quota_exhausted" }, scope);
+            return { exitCode: 4, rounds: executed, summary: msg, progress: effects };
+          }
+          emitEvent("lane.round", { round: i, status: "quota_repeat", model: models[modelIndex] }, scope);
+          i -= 1; // repetir a rodada: não consome
+          continue;
+        }
       }
     }
 
@@ -276,7 +388,6 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
     }
 
     let roundSummary = "";
-    const beforeEffects = effects;
     for (const rf of rlist) {
       const planDir = planDirOf(rf);
       const branch = branchOf(rf);
@@ -303,8 +414,11 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
     emitEvent("lane.round", { round: i, status: "end", summary }, scope);
     console.log("rodada " + i + ": " + summary);
 
-    if (effects === beforeEffects && rlist.length > 0 && !process.env.MANDA_FORCE_CONTINUE) {
-      break;
+    // sem progresso: estado igual antes/depois e operador não morto pelo vigia → exit 3
+    if (!stuck && !process.env.MANDA_FORCE_CONTINUE && laneState(root, repo, repoName, effects) === stateBefore) {
+      const msg = "rodada " + i + " sem progresso (nada mudou). Lane parada.";
+      emitEvent("lane.round", { round: i, status: "no_progress" }, scope);
+      return { exitCode: 3, rounds: executed, summary: msg, progress: effects };
     }
   }
 
@@ -338,6 +452,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args[0] && !args[0]!.startsWith("--")) {
     if (isLane) {
       repo = args.shift()!;
+      if (args[0] && /^\d+$/.test(args[0]!)) rounds = Number(args.shift()); // 2º posicional = rodadas (--rounds vence)
     } else {
       prompt = args.shift()!;
     }
