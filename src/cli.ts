@@ -5,6 +5,7 @@ import { CycleError, loadBundle, resolvePlanDir } from "./bundle";
 import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
 import { installLink } from "./install";
+import { contextMain } from "./context/port";
 
 export interface VersionJson {
   schema_version: number;
@@ -33,7 +34,7 @@ export function run(args: string[]): number {
 
   if (command === "help" || command === "--help" || command === "-h" || command === undefined) {
     console.log(
-      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  install                 Link manda into ~/.local/bin\n  run <PLAN> [--task T]   Run the tasks of a PLAN",
+      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  install                 Link manda into ~/.local/bin\n  run <PLAN> [--task T]   Run the tasks of a PLAN\n  context <cap> [arg] [--json]  Architectural context via provider (gira|rg|<comando>)",
     );
     return 0;
   }
@@ -112,6 +113,10 @@ export function run(args: string[]): number {
       stderr: "inherit",
     });
     return child.exitCode ?? 1;
+  }
+
+  if (command === "context") {
+    return contextMain(rest, process.cwd());
   }
 
   if (command === "route") {
