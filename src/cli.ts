@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { routeMain } from "./routing";
 
@@ -6,6 +7,7 @@ import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
 import { installLink } from "./install";
 import { contextMain } from "./context/port";
+import { replan } from "./replan";
 
 export interface VersionJson {
   schema_version: number;
@@ -113,6 +115,39 @@ export function run(args: string[]): number {
       stderr: "inherit",
     });
     return child.exitCode ?? 1;
+  }
+
+  if (command === "replan") {
+    const [planArg, taskArg] = rest.filter((arg) => !arg.startsWith("--"));
+    if (!planArg || !taskArg) {
+      console.error("Usage: manda replan <PLAN> <TASK>");
+      return 2;
+    }
+
+    const root = process.cwd();
+    const planDir = join(root, ".ginga", "plans", planArg);
+    const prompt = join(root, ".ginga", "prompts", "replan.md");
+    const planner = (argv: string[], cwd: string): { code: number; stdout: string } => {
+      const context = argv[argv.length - 1] ?? "";
+      const result = Bun.spawnSync(
+        ["claude", "-p", "--model", "claude-opus-5-5", `${readFileSync(prompt, "utf8")}\n\n${context}`],
+        { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      );
+      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+    };
+    const lint = (argv: string[], cwd: string): { code: number; stdout: string } => {
+      const result = Bun.spawnSync(["ginga", "lint", argv[1] ?? cwd, "--json"], {
+        cwd,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+    };
+
+    const result = replan({ root, plan: planArg, task: taskArg, receipts: [], judge: "", diff: "", planner, lint });
+    console.log(JSON.stringify(result));
+    return result.result === "replanned" ? 0 : 1;
   }
 
   if (command === "context") {
