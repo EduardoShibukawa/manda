@@ -1,12 +1,13 @@
-import { appendFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { basename, isAbsolute, join, relative } from "node:path";
 
 /**
  * `manda merge <PLAN> <repo> <branch>`: reproduz o gate determinístico de
  * `.ginga/bin/merge-gate.sh` (sem LLM). Um único JSON de 1 linha na saída e
  * o código de saída do gate:
  *
- *   0  mergeado (com MERGE_GATE=1 e log no PLAN do dir)
+ *   0  mergeado (com MERGE_GATE=1 e log no PLAN do dir) + limpeza da
+ *      worktree e da branch (WIP sem commit vai antes para `<plan>/wip/*.patch`)
  *   2  branch sem worktree | main não está na main | mudanças não commitadas
  *   10 sem veredito (judge/<repo>.json) ou veredito de outro HEAD
  *   11 item do judge com regression=true
@@ -92,6 +93,60 @@ function testFails(dir: string): string[] {
   return [...new Set(lines)].sort();
 }
 
+/**
+ * Limpeza pós-merge (só no caminho do exit 0): arquiva WIP sem commit da
+ * worktree como patch no PLAN, remove a worktree e apaga a branch (`-d`,
+ * nunca `-D`). Qualquer falha é só aviso em stderr: exit 0 e merged=true
+ * permanecem.
+ */
+function cleanupAfterMerge(repo: string, wt: string, branch: string, plan: string): void {
+  const warn = (msg: string) => console.warn(`AVISO: limpeza pos-merge ${msg}`);
+  const git = (args: string[], cwd = repo) =>
+    Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+
+  // pular se o processo está dentro da própria worktree (remover o chão)
+  const rel = relative(wt, process.cwd());
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+    warn(`pulada: o cwd atual esta dentro da worktree ${wt}`);
+    return;
+  }
+
+  // 1: WIP (mudança/untracked) vira patch binário no PLAN antes de remover
+  const status = git(["status", "--porcelain"], wt);
+  if (status.exitCode !== 0) {
+    warn(`git status em ${wt} falhou: ${status.stderr.toString().trim()}`);
+    return;
+  }
+  if (status.stdout.toString().trim()) {
+    if (git(["add", "-A"], wt).exitCode !== 0) {
+      warn("git add -A da worktree falhou, WIP nao sera removido");
+      return;
+    }
+    const patch = join(
+      plan,
+      "wip",
+      `${branch.replace(/\//g, "-")}-${new Date().toISOString().replace(/[:.]/g, "-")}.patch`,
+    );
+    mkdirSync(join(plan, "wip"), { recursive: true });
+    const diff = git(["diff", "--cached", "--binary", "HEAD", `--output=${patch}`], wt);
+    if (diff.exitCode !== 0) {
+      warn(`git diff do WIP falhou, worktree nao sera removida: ${diff.stderr.toString().trim()}`);
+      return;
+    }
+  }
+
+  // 2: worktree fora; 3: branch apagada (-d: só se estiver mergeada)
+  const remove = git(["worktree", "remove", "--force", wt]);
+  if (remove.exitCode !== 0) {
+    warn(`git worktree remove falhou: ${remove.stderr.toString().trim()}`);
+    return;
+  }
+  const del = git(["branch", "-d", branch]);
+  if (del.exitCode !== 0) {
+    warn(`git branch -d ${branch} falhou: ${del.stderr.toString().trim()}`);
+  }
+}
+
 export function runMerge(opts: MergeOptions): MergeResult {
   const plan = isAbsolute(opts.plan) ? opts.plan : join(process.cwd(), opts.plan);
   const repo = isAbsolute(opts.repo) ? opts.repo : join(process.cwd(), opts.repo);
@@ -112,6 +167,13 @@ export function runMerge(opts: MergeOptions): MergeResult {
       appendFileSync(join(plan, "log.md"), `- ${isoLocal()} merge-gate ${repoName} ${branch}: exit ${gate} (${why})\n`);
     } catch {}
     exit = { exitCode: gate, why, ...(merged ? { merged: true } : {}) };
+    if (gate === 0) {
+      try {
+        cleanupAfterMerge(repo, wt, branch, plan);
+      } catch (e) {
+        console.warn(`AVISO: limpeza pos-merge falhou: ${String(e)}`);
+      }
+    }
     return exit;
   };
 
