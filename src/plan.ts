@@ -185,12 +185,40 @@ function validate(
   return { ok: errors.length === 0, errors };
 }
 
+interface GingaLintError {
+  file?: unknown;
+  field?: unknown;
+  message?: unknown;
+}
+
+function isBlockingLintError(e: GingaLintError): boolean {
+  const message = typeof e.message === "string" ? e.message : "";
+  return e.field === "frontmatter" || message === "obrigatório" || message.startsWith("inválido:");
+}
+
 function runGingaLint(stagingDir: string): { ok: boolean; output: string } {
   try {
-    const r = Bun.spawnSync(["ginga", "lint", stagingDir], { stdout: "pipe", stderr: "pipe", env: { ...process.env } });
-    if (r.exitCode === null) return { ok: true, output: "" };
-    const out = (r.stdout.toString() + (r.stderr.toString() ? "\n" + r.stderr.toString() : "")).trim();
-    return { ok: r.exitCode === 0, output: out };
+    const r = Bun.spawnSync(["ginga", "lint", stagingDir, "--json"], { stdout: "pipe", stderr: "pipe", env: { ...process.env } });
+    if (r.exitCode === null || r.exitCode === 0) return { ok: true, output: "" };
+    const stdout = r.stdout.toString();
+    const raw = (stdout + (r.stderr.toString() ? "\n" + r.stderr.toString() : "")).trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      return { ok: false, output: raw };
+    }
+    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { errors?: unknown }).errors)) {
+      return { ok: false, output: raw };
+    }
+    const blocking = ((parsed as { errors: GingaLintError[] }).errors ?? []).filter(
+      (e) => e && typeof e === "object" && isBlockingLintError(e),
+    );
+    if (blocking.length === 0) return { ok: true, output: "" };
+    const output = blocking
+      .map((e) => [String(e.file ?? ""), String(e.field ?? ""), String(e.message ?? "")].join(": "))
+      .join("\n");
+    return { ok: false, output };
   } catch {
     return { ok: true, output: "" };
   }
@@ -218,7 +246,7 @@ function buildPrompt(opts: {
   lines.push(`O novo plano tem id ${opts.planId}; grave na pasta ${opts.planId}.`);
   lines.push(`Texto da fonte:\n${opts.sourceText}`);
   lines.push(`Formato: cada arquivo em bloco começando em "=== FILE: <nome> ===" (PLAN.md, TASK-*.md).`);
-  lines.push(`Campos obrigatórios: PLAN.md com type, title; cada TASK com type, mode, goal, plan (= ${opts.planId}), depends_on, tier, touch, done_when, tests_frozen.`);
+  lines.push(`Campos obrigatórios: PLAN.md com type, title, intent (id do INTENT de origem); cada TASK com type, mode, goal, plan (= ${opts.planId}), depends_on, tier, touch, done_when, tests_frozen.`);
   lines.push(`Os campos touch, done_when, tests_frozen, depends_on devem estar presentes. Cada TASK tem no máximo 25 linhas.`);
   lines.push(`Status do PLAN sempre draft.`);
   if (opts.lastErrors.length > 0) {
