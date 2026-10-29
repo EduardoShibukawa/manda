@@ -15,6 +15,7 @@ import { basename, isAbsolute, join } from "node:path";
  *   14 main ganhou falha depois do merge -> `git revert -m 1` automático
  *   15 merge feito, mas `pinga ledger verify` falhou (merge fica)
  *   16 o revert falhou (CRÍTICO)
+ *   17 passe vazio: veredito sem nenhum item para o repo (judge.items ausente ou [])
  */
 
 export interface MergeOptions {
@@ -148,6 +149,10 @@ export function runMerge(opts: MergeOptions): MergeResult {
   // --- 11: item(ns) com regression=true
   const judge = verdictJson.judge as Record<string, unknown> | undefined;
   const items = Array.isArray(judge?.items) ? (judge!.items as unknown[]) : [];
+  // --- 17: passe vazio (logo depois do 10, antes do 11), como o merge-gate.sh
+  if (items.length === 0) {
+    return finish(17, `veredito sem nenhum item para ${repoName} (passe vazio): falta TASK com repo: ${repoName} no PLAN`);
+  }
   const regressions = items.filter((i) => !!(i as { regression?: unknown })?.regression).length;
   if (regressions > 0) return finish(11, `${regressions} item(ns) com regression=true`);
 
