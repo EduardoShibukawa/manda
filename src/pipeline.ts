@@ -65,8 +65,17 @@ function backlogCount(root: string, repoName: string): number {
 
 export const DEFAULT_MODELS = ["opencode/glm-5.3-flash-free", "opencode-go/beam-free"];
 
-/** Esqueleto da T102: a leitura de `[supervisor] models` vem do executor. */
-export function loadSupervisorModels(_root: string): string[] {
+/** Lê `[supervisor] models` (array de strings) de `<root>/.ginga/project.toml`; ausente/inválido → DEFAULT_MODELS. */
+export function loadSupervisorModels(root: string): string[] {
+  try {
+    const toml = Bun.TOML.parse(readFileSync(join(root, ".ginga", "project.toml"), "utf8")) as {
+      supervisor?: { models?: unknown };
+    };
+    const models = toml?.supervisor?.models;
+    if (Array.isArray(models) && models.length > 0 && models.every((m) => typeof m === "string")) {
+      return models as string[];
+    }
+  } catch {}
   return DEFAULT_MODELS;
 }
 
@@ -165,7 +174,7 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
   const repoName = basename(repo);
   const rounds = opts.rounds ?? 6;
   const scope = { repo: repoName };
-  const models = opts.models ?? ["opencode/glm-5.3-flash-free", "opencode-go/beam-free"];
+  const models = opts.models ?? loadSupervisorModels(root);
   let modelIndex = 0;
   const idleThresholdMs = opts.idleThresholdMs ?? 15 * 60 * 1000;
   const pollMs = opts.pollMs ?? 60000;
@@ -236,9 +245,12 @@ async function runPipelineImpl(opts: PipelineOptions): Promise<PipelineResult> {
 
         let lastProgressBytes = 0;
         let idle = 0;
+        let prevTickMs = roundStartMs;
         while (proc.exitCode === null) {
           await Bun.sleep(pollMs);
-          const hp = hasRealProgress(logPath, repoPaths, lastProgressBytes, roundStartMs);
+          const tickMs = Date.now();
+          const hp = hasRealProgress(logPath, repoPaths, lastProgressBytes, prevTickMs);
+          prevTickMs = tickMs;
           if (hp.changed) {
             idle = 0;
             lastProgressBytes = hp.bytes;
