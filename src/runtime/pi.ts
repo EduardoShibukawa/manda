@@ -138,6 +138,38 @@ export function parsePiRunnerOutput(stdout: string): {
   return result;
 }
 
+/**
+ * Extrai o texto (`content[].text`) da ÚLTIMA `message_end` com `role: "assistant"`
+ * do NDJSON do pi (`--mode json`). O stdout cru é NDJSON com o texto JSON-escapado,
+ * o que impede o `manda plan` (`^=== FILE: ... ===$`) de achar os blocos do Planner.
+ * Sem nenhuma mensagem do assistente, devolve `undefined` (quem chama decide o fallback).
+ */
+export function extractPiAssistantText(stdout: string): string | undefined {
+  let text: string | undefined;
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let event: any;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (event?.type !== "message_end") continue;
+    if (event.message?.role !== "assistant") continue;
+    const content = event.message.content;
+    if (!Array.isArray(content)) continue;
+    const parts = content
+      .filter(
+        (part: any) =>
+          part && typeof part === "object" && part.type === "text" && typeof part.text === "string",
+      )
+      .map((part: any) => part.text as string);
+    text = parts.join("");
+  }
+  return text;
+}
+
 export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): RuntimeAdapter {
   const spawnFn = opts.spawn ?? defaultSpawn;
   const bin = opts.bin ?? "pi";
@@ -165,6 +197,9 @@ export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): R
       const args = ["--no-session", "--mode", "json", "--provider", provider, "--model", model, "-p", req.prompt];
       const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs });
       const parsed = parsePiRunnerOutput(raw.stdout);
+      // `resultText` é o texto do assistente (blocos `=== FILE: ===` legíveis ao
+      // `manda plan`); sem mensagem do assistente, cai no stdout cru.
+      const assistantText = extractPiAssistantText(raw.stdout);
 
       // O `pi -p` sai com 0 mesmo quando a API devolve erro (HTTP 400/429):
       // o sinal está no stopReason do NDJSON.
@@ -189,7 +224,7 @@ export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): R
         costUsd: parsed.costUsd,
         stdout: raw.stdout,
         stderr: raw.stderr,
-        resultText: raw.stdout,
+        resultText: assistantText ?? raw.stdout,
         model,
         stopReason: parsed.stopReason,
       };
