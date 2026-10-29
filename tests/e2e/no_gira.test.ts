@@ -101,7 +101,8 @@ describe("INTENT → PLAN → TASK → verify, sem gira nem ginga", () => {
     expect(r.stderr.toString()).not.toContain("gira");
     expect(r.exitCode).toBe(0);
     expect(existsSync(join(ws, "src/a.ts"))).toBe(true);
-    const calls = readFileSync(log, "utf8").trim().split("\n");
+    // uma invocação por linha que começa com o cwd; o prompt multilinha continua nas linhas seguintes
+    const calls = readFileSync(log, "utf8").split("\n").filter((l) => l.includes("\t--no-session --mode json"));
     expect(calls.length).toBe(2); // planner + executor
     const q = Bun.spawnSync([PINGA, "queue", "--json", "--root", ws, "--ledger", ledger], { env: env(), stdout: "pipe", stderr: "pipe" });
     const t1 = JSON.parse(q.stdout.toString()).tasks.find((t: any) => t.task === "T1");
