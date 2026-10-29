@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildReplanContext, replan, type Runner } from "../src/replan.ts";
 
+const FIXTURES = join(import.meta.dir, "fixtures", "replan");
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -22,7 +23,7 @@ function setup(): { root: string; plan: string; task: string } {
   const task = "TASK-03-replan";
   const planDir = join(root, ".ginga", "plans", plan);
   put(join(planDir, "PLAN.md"), "---\ntype: plan\ntitle: Demo\n---\n");
-  put(join(planDir, `${task}.md`), "---\ntype: task\ngoal: corrigir a tarefa\n---\ncorpo da tarefa\n");
+  put(join(planDir, `${task}.md`), readFileSync(join(FIXTURES, "task.md"), "utf8"));
   put(join(planDir, "LEARNINGS.md"), "- learning estável\n");
   put(join(root, "diff-main-plan.txt"), "diff --git a/x b/x\n");
   put(join(root, "diff-main-plan-stat.txt"), " x | 1 +\n");
@@ -56,6 +57,7 @@ describe("buildReplanContext", () => {
     expect(first).toContain("achado alto");
     expect(first).toContain("diff completo");
     expect(first).toContain("learning estável");
+    expect(first).toBe(readFileSync(join(FIXTURES, "expected-context.md"), "utf8").trimEnd());
   });
 
   test("trunca o diff em 20000 caracteres", () => {

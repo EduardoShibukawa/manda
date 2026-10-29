@@ -6,8 +6,10 @@ touch:
   - src/replan.ts
   - src/cli.ts
   - tests/replan.test.ts
+  - tests/fixtures/replan/expected-context.md
+  - tests/fixtures/replan/task.md
   - tasks/T157/PLAN.md
-tests_frozen: [tests/replan.test.ts]
+tests_frozen: [tests/replan.test.ts, tests/fixtures/replan/expected-context.md, tests/fixtures/replan/task.md]
 ---
 
 ## Contexto
