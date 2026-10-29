@@ -1,0 +1,57 @@
+{
+  "entry_points": [
+    "service:frontend",
+    "service:product-catalog",
+    "service:cart",
+    "service:currency",
+    "service:shipping",
+    "service:checkout",
+    "service:email",
+    "service:payment"
+  ],
+  "steps": [
+    {
+      "order": 1,
+      "title": "frontend (Service)",
+      "node_ids": [
+        "service:frontend"
+      ],
+      "read": [
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L253-L253",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L296-L296",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L308-L308",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L312-L312",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L316-L316",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/dogfood/services/docker-compose.yaml#L9-L9"
+      ],
+      "why": "`service:frontend` is an entry point: it declares ports ${FRONTEND_PORT} at the cited locator.",
+      "why_template": "entry_declared",
+      "why_args": [
+        "service:frontend",
+        "ports ${FRONTEND_PORT}"
+      ],
+      "why_locator": "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/src/frontend/Dockerfile#L59-L59"
+    },
+    {
+      "order": 2,
+      "title": "product-catalog (Service)",
+      "node_ids": [
+        "service:product-catalog",
+        "contract:ProductCatalogService"
+      ],
+      "read": [
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L518-L518",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/compose.yaml#L558-L558",
+        "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/src/product-catalog/main.go#L54-L54"
+      ],
+      "why": "`service:product-catalog` is an entry point: it declares ports ${PRODUCT_CATALOG_PORT} at the cited locator.",
+      "why_template": "entry_declared",
+      "why_args": [
+        "service:product-catalog",
+        "ports ${PRODUCT_CATALOG_PORT}"
+      ],
+      "why_locator": "gira-g@493dc84ef4c25841c98729225f2b3071ed6fb685:testdata/corpus/otel-demo-3.1.0-mini/src/product-catalog/Dockerfile#L31-L31"
+    }
+  ],
+  "truncated": true
+}

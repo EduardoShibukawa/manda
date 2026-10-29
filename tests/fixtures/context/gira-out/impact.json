@@ -1,0 +1,51 @@
+{
+  "target_id": "contract:src/app.ts:Greeter",
+  "target_kind": "Contract",
+  "depth": 1,
+  "upstream_services": [],
+  "downstream_services": [],
+  "affected_contracts": [
+    {
+      "id": "contract:src/app.ts:Greeter",
+      "kind": "Contract",
+      "name": "Greeter",
+      "description": "TypeScript class Greeter with 2 methods",
+      "metadata": {
+        "bases": null,
+        "declared_file": "src/app.ts",
+        "language": "typescript",
+        "methods": [
+          {
+            "line": 6,
+            "name": "constructor",
+            "parameters": "private prefix: string",
+            "return_type": ""
+          },
+          {
+            "line": 8,
+            "name": "shout",
+            "parameters": "name: string",
+            "return_type": "string"
+          }
+        ],
+        "ts_kind": "class"
+      },
+      "evidence": [
+        {
+          "locator": {
+            "repo": "local",
+            "commit_sha": "113fa58cd7b6864203a93c3e2549a258adfe7d2d",
+            "path": "src/app.ts",
+            "start_line": 5,
+            "end_line": 11
+          },
+          "origin": "extracted",
+          "rule_id": "typescript-ast",
+          "status": "current",
+          "discovered_at": "2026-10-29T11:11:17Z"
+        }
+      ]
+    }
+  ],
+  "mediation_edges": []
+}

@@ -1,0 +1,7 @@
+#!/bin/sh
+# stub de `pi` no formato real (--mode json): o planner (prompt com "=== FILE") e o executor
+printf '%s\t%s\n' "$PWD" "$*" >> "$STUB_LOG"
+case "$*" in
+  *"=== FILE"*) cat "$STUB_PLANNER_OUT" ;;
+  *) mkdir -p src && echo 'export {};' > src/a.ts; cat "$STUB_EXEC_OUT" ;;
+esac

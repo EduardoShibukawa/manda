@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# gira falso dos testes do context port (TASK-04): reimplementa o CLI do gira com saídas gravadas
+# (capturadas do gira real v0.3.0 num repo TS de fixture e do tour do gira-g).
+set -u
+here="$(cd "$(dirname "$0")/.." && pwd)/gira-out"
+cmd="${1:-}"; shift || true
+pos=()
+for a in "$@"; do case "$a" in -*) ;; *) pos+=("$a");; esac; done
+case "$cmd" in
+  outline)
+    f="${pos[0]:-}"
+    case "$f" in
+      *store.ts) cat "$here/outline-store.json" ;;
+      *app.ts)   cat "$here/outline-app.json" ;;
+      *) echo "Error: file required" >&2; exit 2 ;;
+    esac ;;
+  slice)        cat "$here/slice.json" ;;
+  impact)       cat "$here/impact.json" ;;
+  tour)         cat "$here/tour.json" ;;
+  capabilities) echo '["outline","slice","impact","gira:tour"]' ;;
+  *) echo "Error: unknown command \"$cmd\". Run 'gira --help' for usage" >&2; exit 1 ;;
+esac

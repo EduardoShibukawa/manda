@@ -1,0 +1,115 @@
+[
+  {
+    "id": "contract:src/store.ts:Store",
+    "kind": "Contract",
+    "name": "Store",
+    "description": "TypeScript interface Store with 1 methods",
+    "metadata": {
+      "bases": null,
+      "declared_file": "src/store.ts",
+      "language": "typescript",
+      "methods": [
+        {
+          "line": 4,
+          "name": "get",
+          "parameters": "key: string",
+          "return_type": "string"
+        }
+      ],
+      "ts_kind": "interface"
+    },
+    "evidence": [
+      {
+        "locator": {
+          "repo": "local",
+          "commit_sha": "head",
+          "path": "src/store.ts",
+          "start_line": 3,
+          "end_line": 5
+        },
+        "origin": "extracted",
+        "rule_id": "typescript-ast",
+        "status": "current",
+        "discovered_at": "2026-10-29T11:12:46.497393014Z"
+      }
+    ]
+  },
+  {
+    "id": "contract:src/store.ts:MemoryStore",
+    "kind": "Contract",
+    "name": "MemoryStore",
+    "description": "TypeScript class MemoryStore with 2 methods",
+    "metadata": {
+      "bases": [
+        "Store"
+      ],
+      "declared_file": "src/store.ts",
+      "language": "typescript",
+      "methods": [
+        {
+          "line": 10,
+          "name": "get",
+          "parameters": "key: string",
+          "return_type": "string"
+        },
+        {
+          "line": 14,
+          "name": "set",
+          "parameters": "key: string, value: string",
+          "return_type": "void"
+        }
+      ],
+      "ts_kind": "class"
+    },
+    "evidence": [
+      {
+        "locator": {
+          "repo": "local",
+          "commit_sha": "head",
+          "path": "src/store.ts",
+          "start_line": 7,
+          "end_line": 17
+        },
+        "origin": "extracted",
+        "rule_id": "typescript-ast",
+        "status": "current",
+        "discovered_at": "2026-10-29T11:12:46.497393014Z"
+      }
+    ]
+  },
+  {
+    "id": "lib:src/store.ts:store",
+    "kind": "Library",
+    "name": "store",
+    "description": "TypeScript module store with 1 functions",
+    "metadata": {
+      "functions": [
+        {
+          "line": 19,
+          "name": "describe",
+          "parameters": "store: Store, name: string",
+          "return_type": "string"
+        }
+      ],
+      "imports": [
+        "./app"
+      ],
+      "language": "typescript"
+    },
+    "evidence": [
+      {
+        "locator": {
+          "repo": "local",
+          "commit_sha": "head",
+          "path": "src/store.ts",
+          "start_line": 1,
+          "end_line": 22
+        },
+        "origin": "extracted",
+        "rule_id": "typescript-module-ast",
+        "status": "current",
+        "discovered_at": "2026-10-29T11:12:46.497393014Z"
+      }
+    ]
+  }
+]
