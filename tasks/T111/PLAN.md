@@ -4,6 +4,7 @@ goal: "manda install cria ~/.local/bin/manda (idempotente), avisa se fora do PAT
 touch:
   - src/install.ts
   - src/cli.ts
+  - bin/manda.ts
   - tests/install.test.ts
   - tasks/T111/PLAN.md
 tests_frozen: [tests/install.test.ts]

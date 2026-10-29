@@ -4,6 +4,7 @@ import { routeMain } from "./routing";
 import { CycleError, loadBundle, resolvePlanDir } from "./bundle";
 import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
+import { installLink } from "./install";
 
 export interface VersionJson {
   schema_version: number;
@@ -30,10 +31,19 @@ export function run(args: string[]): number {
     return 0;
   }
 
-  if (command === "help" || command === undefined) {
+  if (command === "help" || command === "--help" || command === "-h" || command === undefined) {
     console.log(
-      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  run <PLAN> [--task T]   Run the tasks of a PLAN",
+      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  install                 Link manda into ~/.local/bin\n  run <PLAN> [--task T]   Run the tasks of a PLAN",
     );
+    return 0;
+  }
+
+  if (command === "install") {
+    const result = installLink();
+    console.log(JSON.stringify(result));
+    if (!result.onPath) {
+      console.error(`aviso: ~/.local/bin não está no PATH; adicione-o para chamar "manda" direto`);
+    }
     return 0;
   }
 
