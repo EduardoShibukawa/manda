@@ -109,7 +109,7 @@ describe("manda merge: códigos de saída do gate", () => {
 
   test("10: veredito de outro HEAD não vale", async () => {
     stubQueue(done);
-    writeVerdict("0" + wtHead().slice(1));
+    writeVerdict("f".repeat(40)); // HEAD garantidamente diferente (sentinela, não colide com hash real)
     const r = await run();
     expect(r.exitCode).toBe(10);
   });
