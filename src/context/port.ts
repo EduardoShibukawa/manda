@@ -1,4 +1,5 @@
 import { loadProject } from "../project";
+import { rgContext } from "./rg";
 import { giraAvailable, giraContext } from "./gira";
 
 export interface ContextItem {
@@ -87,7 +88,7 @@ function normalizeSchema(raw: unknown, provider: string, capability: string): Co
 
 function dispatch(provider: string, capability: string, arg: string | undefined, cwd: string): ContextResult {
   if (provider === "gira") return giraContext(capability, arg, cwd);
-  if (provider === "rg") return unsupportedResult("rg", capability); // implementado na TASK-05
+  if (provider === "rg") return rgContext(capability, arg, cwd);
   return commandContext(provider, capability, arg);
 }
 
