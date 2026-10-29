@@ -318,6 +318,16 @@ export async function main(argv: string[]): Promise<number> {
   return res.exitCode;
 }
 
+// Re-export do port de judge-run.sh (TASK-02) para compatibilidade de import.
+export {
+  runJudge,
+  judgeRun,
+  runJudgePlan,
+  judgeRunPlan,
+  mandaJudge,
+  insideLlmAgent,
+} from "./judge_run";
+
 if (import.meta.main) {
   process.exit(await main(process.argv.slice(2)));
 }

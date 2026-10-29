@@ -56,7 +56,9 @@ export function run(args: string[]): number {
   }
 
   if (command === "judge") {
-    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "judge.ts"), ...rest], {
+    const positionals = rest.filter((a) => !a.startsWith("--"));
+    const target = positionals.length >= 3 ? "judge_run.ts" : "judge.ts";
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, target), ...rest], {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
