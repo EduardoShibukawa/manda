@@ -56,7 +56,46 @@ export function run(args: string[]): number {
   }
 
   if (command === "judge") {
-    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "judge.ts"), ...rest], {
+    const valueOpts = new Set(["--root", "--base", "--head", "--models", "--repo-name"]);
+    const positionals: string[] = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      const a = rest[i]!;
+      if (a.startsWith("--")) {
+        if (a.includes("=")) continue;
+        if (valueOpts.has(a)) i += 1;
+        continue;
+      }
+      positionals.push(a);
+    }
+    const target = positionals.length >= 3 ? "judge_run.ts" : "judge.ts";
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, target), ...rest], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return child.exitCode ?? 1;
+  }
+
+  if (command === "pipeline" || command === "lane") {
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "pipeline.ts"), command, ...rest], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return child.exitCode ?? 1;
+  }
+
+  if (command === "kill_and_retry") {
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "verbs.ts"), "kill_and_retry", ...rest], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return child.exitCode ?? 1;
+  }
+
+  if (command === "rotate_model") {
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "verbs.ts"), "rotate_model", ...rest], {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
