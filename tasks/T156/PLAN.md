@@ -10,6 +10,7 @@ touch:
   - tests/fixtures/red/TASK-02-b.md
   - tests/fixtures/red/frozen.test.ts
   - tests/fixtures/red/case.txt
+  - tests/fixtures/red/frozen.test.ts
   - tasks/T156/PLAN.md
 tests_frozen: [tests/red.test.ts, tests/fixtures/red/TASK-01-a.md, tests/fixtures/red/TASK-02-b.md, tests/fixtures/red/frozen.test.ts, tests/fixtures/red/case.txt]
 ---
