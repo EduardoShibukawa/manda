@@ -247,16 +247,20 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
     const verdictPath = join(dir, "VERDICT.json");
     writeFileSync(verdictPath, JSON.stringify({ verdict: verdict.verdict, findings: verdict.findings }));
 
+    const transcriptPath = join(dir, "judge-transcript.jsonl");
+    writeFileSync(transcriptPath, JSON.stringify({ model: chosen.model }) + "\n");
+
     const sealCmd = (typeof project.commands.judge_seal === "string" && project.commands.judge_seal.trim())
       ? project.commands.judge_seal.trim()
-      : "pinga judge {plan} --verdict {file} --judge-model {model} --planner-model {planner}";
+      : "pinga judge {plan} --verdict {file} --judge-model {model} --planner-model {planner} --usage-file {transcript}";
     let sealExit = 0;
     if (sealCmd) {
       const cmd = sealCmd
         .replaceAll("{plan}", join(dir, "PLAN.md"))
         .replaceAll("{file}", verdictPath)
         .replaceAll("{model}", chosen.model)
-        .replaceAll("{planner}", plannerModel);
+        .replaceAll("{planner}", plannerModel)
+      .replaceAll("{transcript}", transcriptPath);
       const r = Bun.spawnSync(["bash", "-lc", cmd], { cwd: root, stdout: "pipe", stderr: "pipe" });
       sealExit = r.exitCode ?? 1;
     }
