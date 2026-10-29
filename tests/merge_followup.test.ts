@@ -75,7 +75,7 @@ function wtHead(): string {
   return git(["rev-parse", "HEAD"], wt);
 }
 
-function writeVerdict(head: string, items: unknown[] = []) {
+function writeVerdict(head: string, items: unknown[] = [{ ref: "AC-00", ok: true, regression: false, evidence: "e" }]) {
   writeFileSync(
     join(plan, "judge", `${REPO_NAME}.json`),
     JSON.stringify({ head, judge: { verdict: "pass", items, summary: "ok" } }),

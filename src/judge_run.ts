@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
+import { findLlmAgent, type LlmAgentCheck } from "./llm_guard";
+
 export interface JudgeRunOptions {
   plan: string;
   repo: string;
@@ -38,63 +40,11 @@ function isoLocal(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`;
 }
 
-function readProcCmdline(pid: number): string[] {
-  try {
-    const raw = readFileSync(`/proc/${pid}/cmdline`);
-    return raw
-      .toString("utf8")
-      .split("\0")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  } catch {
-    return [];
-  }
-}
+export type { LlmAgentCheck };
 
-function readParentPid(pid: number): number {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const m = stat.match(/^\d+ \((.*)\) \S+ (\d+)/);
-    if (m) return Number(m[2]);
-  } catch {}
-  return 0;
-}
-
-export interface LlmAgentCheck {
-  refused: boolean;
-  pid?: number;
-  label?: string;
-}
-
+/** Reexportado de llm_guard (T101): comportamento idêntico ao original. */
 export function insideLlmAgent(startPid: number = process.ppid): LlmAgentCheck {
-  const seen = new Set<number>();
-  let pid = startPid;
-  while (pid && pid > 1 && !seen.has(pid)) {
-    seen.add(pid);
-    const cmd = readProcCmdline(pid);
-    if (cmd.length > 0) {
-      let b0 = basename(cmd[0]);
-      let i = 1;
-      if (b0 === "timeout") {
-        while (i < cmd.length && (cmd[i].startsWith("-") || /^\d+$/.test(cmd[i]))) i += 1;
-        if (i < cmd.length) {
-          b0 = basename(cmd[i]);
-          i += 1;
-        }
-      }
-      const arg = cmd[i] ?? "";
-      const refused =
-        (b0.includes("opencode") && arg === "run") ||
-        b0 === "pi" ||
-        (b0 === "claude" && arg === "-p") ||
-        (b0 === "codex" && arg === "exec");
-      if (refused) {
-        return { refused: true, pid, label: b0 };
-      }
-    }
-    pid = readParentPid(pid);
-  }
-  return { refused: false };
+  return findLlmAgent(startPid);
 }
 
 function resolveRepo(repo: string, root: string): string {

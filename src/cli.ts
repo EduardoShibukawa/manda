@@ -2,7 +2,9 @@ import { join } from "node:path";
 import { routeMain } from "./routing";
 
 import { CycleError, loadBundle, resolvePlanDir } from "./bundle";
+import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
+import { installLink } from "./install";
 
 export interface VersionJson {
   schema_version: number;
@@ -29,10 +31,19 @@ export function run(args: string[]): number {
     return 0;
   }
 
-  if (command === "help" || command === undefined) {
+  if (command === "help" || command === "--help" || command === "-h" || command === undefined) {
     console.log(
-      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  run <PLAN> [--task T]   Run the tasks of a PLAN",
+      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  install                 Link manda into ~/.local/bin\n  run <PLAN> [--task T]   Run the tasks of a PLAN",
     );
+    return 0;
+  }
+
+  if (command === "install") {
+    const result = installLink();
+    console.log(JSON.stringify(result));
+    if (!result.onPath) {
+      console.error(`aviso: ~/.local/bin não está no PATH; adicione-o para chamar "manda" direto`);
+    }
     return 0;
   }
 
@@ -150,6 +161,27 @@ export function run(args: string[]): number {
   return 2;
 }
 
+const GUARDED_COMMANDS = new Set(["merge", "judge", "pipeline", "lane"]);
+
+/**
+ * Entrada do bin/manda (T101): os verbos de processo (merge|judge|pipeline|lane)
+ * recusam com exit 30 quando um ancestral é agente LLM, igual ao merge-gate.sh.
+ * `run()` segue sem guarda: a suíte de testes roda in-process sob o operador.
+ */
+export function main(args: string[]): number {
+  const command = args[0];
+  if (command !== undefined && GUARDED_COMMANDS.has(command)) {
+    const check = findLlmAgent(process.ppid);
+    if (check.refused) {
+      console.log(
+        `{"error":"recusado: chamado de dentro de um agente LLM (pid ${check.pid}: ${check.label}); só o pipeline.sh pode"}`,
+      );
+      return 30;
+    }
+  }
+  return run(args);
+}
+
 if (import.meta.main) {
-  process.exit(run(process.argv.slice(2)));
+  process.exit(main(process.argv.slice(2)));
 }
