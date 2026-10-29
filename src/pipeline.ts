@@ -63,6 +63,13 @@ function backlogCount(root: string, repoName: string): number {
   return (text.match(/^- \[ \]/gm) || []).length;
 }
 
+export const DEFAULT_MODELS = ["opencode/glm-5.3-flash-free", "opencode-go/beam-free"];
+
+/** Esqueleto da T102: a leitura de `[supervisor] models` vem do executor. */
+export function loadSupervisorModels(_root: string): string[] {
+  return DEFAULT_MODELS;
+}
+
 export function killByPid(pid: number): boolean {
   try {
     process.kill(pid, "SIGKILL");
