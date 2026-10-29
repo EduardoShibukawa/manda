@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { routeMain } from "./routing";
 
 import { CycleError, loadBundle, resolvePlanDir } from "./bundle";
+import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
 
 export interface VersionJson {
@@ -150,6 +151,27 @@ export function run(args: string[]): number {
   return 2;
 }
 
+const GUARDED_COMMANDS = new Set(["merge", "judge", "pipeline", "lane"]);
+
+/**
+ * Entrada do bin/manda (T101): os verbos de processo (merge|judge|pipeline|lane)
+ * recusam com exit 30 quando um ancestral é agente LLM, igual ao merge-gate.sh.
+ * `run()` segue sem guarda: a suíte de testes roda in-process sob o operador.
+ */
+export function main(args: string[]): number {
+  const command = args[0];
+  if (command !== undefined && GUARDED_COMMANDS.has(command)) {
+    const check = findLlmAgent(process.ppid);
+    if (check.refused) {
+      console.log(
+        `{"error":"recusado: chamado de dentro de um agente LLM (pid ${check.pid}: ${check.label}); só o pipeline.sh pode"}`,
+      );
+      return 30;
+    }
+  }
+  return run(args);
+}
+
 if (import.meta.main) {
-  process.exit(run(process.argv.slice(2)));
+  process.exit(main(process.argv.slice(2)));
 }
