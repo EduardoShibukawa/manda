@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { allocTaskIds } from "./alloc";
 import { loadBundle } from "./bundle";
@@ -25,9 +25,7 @@ function ensureDir(p: string) {
 
 function copyRecursive(src: string, dest: string) {
   if (!existsSync(src)) return;
-  const stat = Bun.file(src);
-  // Bun.file doesn't give stat easily sync; use fs
-  const s = require("node:fs").statSync(src);
+  const s = statSync(src);
   if (s.isDirectory()) {
     ensureDir(dest);
     for (const entry of readdirSync(src)) {
