@@ -165,12 +165,14 @@ export function runMerge(opts: MergeOptions): MergeResult {
         queueTasks = (j as { tasks: unknown[] }).tasks;
       }
     } catch {}
-    const pending = queueTasks
-      .filter((t) => {
-        const e = t as { task?: unknown; state?: unknown };
-        return typeof e.task === "string" && wanted.has(e.task) && e.state !== "done";
-      })
-      .map((t) => String((t as { task: unknown }).task));
+    // Uma TASK do diff que não apareça na fila do pinga (ou não esteja
+    // `done`) conta como pendente: ausência na fila == pendente (exit 12).
+    const stateByTask = new Map<string, unknown>();
+    for (const t of queueTasks) {
+      const e = t as { task?: unknown; state?: unknown };
+      if (typeof e.task === "string") stateByTask.set(e.task, e.state);
+    }
+    const pending = [...wanted].filter((task) => stateByTask.get(task) !== "done");
     if (pending.length > 0) return finish(12, `sem receipt done: ${pending.join(" ")}`);
   }
 
@@ -200,7 +202,12 @@ export function runMerge(opts: MergeOptions): MergeResult {
   const extraMain = slug(testFails(repo));
   if (extraMain) {
     // sem -q: git revert (≥2.50) não aceita quiet (uso 129) e o revert falharia em silêncio
-    git(["revert", "-m", "1", "--no-edit", "HEAD"]);
+    const revert = git(["revert", "-m", "1", "--no-edit", "HEAD"]);
+    if (revert.exitCode !== 0) {
+      const warn = `AVISO: git revert falhou (exit ${revert.exitCode}): ${revert.stderr.toString().trim()}`;
+      console.warn(warn);
+      return finish(14, `main ganhou falha apos merge; revert FALHOU: ${extraMain}; ${warn}`);
+    }
     return finish(14, `main ganhou falha apos merge, revertido: ${extraMain}`);
   }
 
