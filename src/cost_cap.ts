@@ -158,3 +158,21 @@ export function checkPaidCall(o: CheckPaidCallOptions): CapResult {
 
   return capCheck({ spent_usd, next_estimate_usd: o.next_estimate_usd, cap_usd: cap });
 }
+
+export function extractTotalCostUsd(output: string): number | undefined {
+  if (!output) return undefined;
+  let last: number | undefined;
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === "object" && typeof obj.total_cost_usd === "number" && Number.isFinite(obj.total_cost_usd)) {
+        last = obj.total_cost_usd;
+      }
+    } catch {
+      // ignore non-JSON lines
+    }
+  }
+  return last;
+}

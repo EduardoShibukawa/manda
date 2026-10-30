@@ -17,6 +17,7 @@ export interface ReplanOptions extends ReplanContextOptions {
   planner: Runner;
   lint: Runner;
   model?: string | null;
+  claudeCosts?: number[];
   costCmd?: string[];
   since?: string;
   nextEstimateUsd?: number;
@@ -68,6 +69,7 @@ export function replan(options: ReplanOptions): ReplanResult {
     since,
     next_estimate_usd: nextEstimateUsd,
     model: options.model,
+    claudeCosts: options.claudeCosts,
     costCmd: options.costCmd,
   });
   if (!costCheck.allow) {

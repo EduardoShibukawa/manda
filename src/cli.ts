@@ -9,7 +9,7 @@ import { installLink } from "./install";
 import { contextMain } from "./context/port";
 import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
 import { redPlan } from "./red";
-import { checkPaidCall } from "./cost_cap";
+import { checkPaidCall, extractTotalCostUsd } from "./cost_cap";
 
 export interface VersionJson {
   schema_version: number;
@@ -253,23 +253,41 @@ export function run(args: string[]): number {
       if (idx !== -1 && idx + 1 < cmd.length) return cmd[idx + 1];
       return undefined;
     };
-    const model = extractModel(plannerCmd) ?? extractModel(fallbackCmd);
-    const startTime = new Date().toISOString();
-    const costCheck = checkPaidCall({
+    const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    let claudeCosts: number[] = [];
+    const primaryModel = extractModel(plannerCmd);
+    const costCheckPrimary = checkPaidCall({
       root,
-      since: startTime,
+      since: since24,
       next_estimate_usd: 0.15,
-      model,
-      claudeCosts: [],
+      model: primaryModel,
+      claudeCosts,
     });
-    if (!costCheck.allow) {
-      console.log(JSON.stringify({ result: "blocked", reason: costCheck.reason || "budget" }));
+    if (!costCheckPrimary.allow) {
+      console.log(JSON.stringify({ result: "blocked", reason: costCheckPrimary.reason || "budget" }));
       return 1;
     }
 
     let plannerRes = planner(plannerCmd);
+    const costPrimary = extractTotalCostUsd(plannerRes.stdout);
+    if (costPrimary !== undefined) claudeCosts.push(costPrimary);
+
     if (plannerRes.code !== 0) {
+      const fallbackModel = extractModel(fallbackCmd);
+      const costCheckFallback = checkPaidCall({
+        root,
+        since: since24,
+        next_estimate_usd: 0.15,
+        model: fallbackModel,
+        claudeCosts,
+      });
+      if (!costCheckFallback.allow) {
+        console.log(JSON.stringify({ result: "blocked", reason: costCheckFallback.reason || "budget" }));
+        return 1;
+      }
       plannerRes = planner(fallbackCmd);
+      const costFallback = extractTotalCostUsd(plannerRes.stdout);
+      if (costFallback !== undefined) claudeCosts.push(costFallback);
     }
 
     const result = replan({
@@ -279,6 +297,9 @@ export function run(args: string[]): number {
       receipts: lastReceipts,
       judge,
       diff,
+      model: primaryModel ?? extractModel(fallbackCmd),
+      since: since24,
+      claudeCosts,
       planner: () => plannerRes,
       lint,
     });
