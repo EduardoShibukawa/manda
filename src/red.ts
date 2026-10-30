@@ -100,7 +100,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   // get taken pinga_task ids from queue if possible
   const taken: string[] = [];
   try {
-    const q = pinga(["queue"], root);
+    const q = pinga(["queue", "--json"], root);
     if (q.code === 0 && q.stdout) {
       try {
         const parsed = JSON.parse(q.stdout);
@@ -155,6 +155,19 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     // try to find any tests_frozen
     throw new Error(join("tests", "frozen.test.ts"));
   }
+
+  // validate individually each tests_frozen before materializing
+  for (const task of tasks) {
+    const fmTask = task as Record<string, unknown>;
+    const testsFrozen = (fmTask.tests_frozen as string[]) || [];
+    for (const tf of testsFrozen) {
+      const srcPath = join(frozenSrc, tf);
+      if (!existsSync(srcPath)) {
+        throw new Error(tf);
+      }
+    }
+  }
+
   copyRecursive(frozenSrc, worktree);
 
   const results: RedTaskResult[] = [];
