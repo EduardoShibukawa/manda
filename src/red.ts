@@ -93,9 +93,9 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     throw new Error(`plan not found: ${planDir}`);
   }
 
-  // load bundle of tasks
+  // load bundle of tasks and filter by repo
   const bundle = loadBundle(planDir);
-  const tasks = bundle.tasks;
+  const tasks = bundle.tasks.filter((t) => (t as Record<string, unknown>).repo === repo);
 
   // get taken pinga_task ids from queue if possible
   const taken: string[] = [];
@@ -155,11 +155,6 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
 
   // copy frozen files from planDir/frozen/<repo> to worktree
   const frozenSrc = join(planDir, "frozen", repo);
-  if (!existsSync(frozenSrc)) {
-    // look for specific test file mentioned in tasks
-    // try to find any tests_frozen
-    throw new Error(join("tests", "frozen.test.ts"));
-  }
 
   // validate individually each tests_frozen before materializing
   for (const task of tasks) {
@@ -168,7 +163,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     for (const tf of testsFrozen) {
       const srcPath = join(frozenSrc, tf);
       if (!existsSync(srcPath)) {
-        throw new Error(tf);
+        throw new Error(srcPath);
       }
     }
   }
@@ -206,7 +201,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     const proveRes = pinga(["prove-red", join("tasks", pingaTask, "PLAN.md")], worktree);
     if (proveRes.stdout && proveRes.stdout.includes("test_passed_on_base")) {
       // mark as blocked
-      const updatedFm = { ...fm, pinga_task: pingaTask, blocked: true, reason: "test_passed_on_base" };
+      const updatedFm = { ...fm, pinga_task: pingaTask, status: "blocked", reason: "test_passed_on_base" };
       // write back to plan task file
       writeFileSync(taskFileInPlan, replaceFrontmatter(taskText || dumpFrontmatter(updatedFm), updatedFm));
       results.push({ task: taskId, pinga_task: pingaTask, red: false });
