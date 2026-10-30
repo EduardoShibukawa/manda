@@ -4,7 +4,7 @@ import type { Scope, ToolCall } from "../src/runtime/scope_guard";
 
 const scope: Scope = {
   root: "/wt",
-  touch: ["src/target.ts", "src/**", "tests/scope_guard.test.ts", "tests/fixtures/x.ts"],
+  touch: ["src/target.ts", "src/sub/**", "tests/scope_guard.test.ts", "tests/fixtures/x.ts"],
   frozen: ["tests/fixtures/**", "tests/frozen/"],
 };
 
@@ -14,7 +14,7 @@ describe("decideToolCall", () => {
   test("edit/write dentro do touch → allow", () => {
     expect(decideToolCall(call("edit", { path: "src/target.ts" }), scope)).toEqual({ allow: true });
     expect(decideToolCall(call("write", { path: "tests/scope_guard.test.ts" }), scope)).toEqual({ allow: true });
-    expect(decideToolCall(call("edit", { path: "src/any/deep.ts" }), scope)).toEqual({ allow: true }); // glob src/**
+    expect(decideToolCall(call("edit", { path: "src/sub/deep.ts" }), scope)).toEqual({ allow: true }); // glob src/sub/**
     expect(decideToolCall(call("edit", { path: "/wt/src/target.ts" }), scope)).toEqual({ allow: true }); // absoluto dentro da raiz
   });
 
