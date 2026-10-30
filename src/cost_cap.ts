@@ -37,7 +37,7 @@ export function spentUsd(input: SpentInput): number {
   const sinceMs = parseSinceMs(input.since);
   let dbSpent = 0;
 
-  const opencodeDb = input.opencodeDb ?? join(homedir(), ".local", "share", "opencode", "opencode.db");
+  const opencodeDb = input.opencodeDb ?? join(process.env.HOME ?? homedir(), ".local", "share", "opencode", "opencode.db");
   if (opencodeDb && existsSync(opencodeDb)) {
     const db = new Database(opencodeDb, { readonly: true, create: false });
     try {
@@ -49,6 +49,8 @@ export function spentUsd(input: SpentInput): number {
           dbSpent += cost;
         }
       }
+    } catch {
+      // ignore DB errors (e.g., empty or corrupted file without session_v2 table)
     } finally {
       db.close();
     }
@@ -146,7 +148,7 @@ export function checkPaidCall(o: CheckPaidCallOptions): CapResult {
       throw new Error("command failed");
     }
   } catch {
-    const opencodeDb = o.opencodeDb ?? join(homedir(), ".local", "share", "opencode", "opencode.db");
+    const opencodeDb = o.opencodeDb ?? join(process.env.HOME ?? homedir(), ".local", "share", "opencode", "opencode.db");
     spent_usd = spentUsd({
       since: o.since,
       opencodeDb,
