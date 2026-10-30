@@ -112,6 +112,11 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
       } catch {}
     }
   } catch {}
+  // also include already allocated pinga_task from the plan tasks
+  for (const t of tasks) {
+    const pt = (t as any).pinga_task;
+    if (typeof pt === "string") taken.push(pt);
+  }
 
   // allocate ids for tasks without pinga_task
   const toAllocate = tasks.filter((t) => {
@@ -199,13 +204,16 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
 
     // run pinga prove-red
     const proveRes = pinga(["prove-red", join("tasks", pingaTask, "PLAN.md")], worktree);
-    if (proveRes.code !== 0 || (proveRes.stdout && proveRes.stdout.includes("test_passed_on_base"))) {
+    if (proveRes.stdout && proveRes.stdout.includes("test_passed_on_base")) {
       // mark as blocked
       const updatedFm = { ...fm, pinga_task: pingaTask, blocked: true, reason: "test_passed_on_base" };
       // write back to plan task file
       writeFileSync(taskFileInPlan, replaceFrontmatter(taskText || dumpFrontmatter(updatedFm), updatedFm));
       results.push({ task: taskId, pinga_task: pingaTask, red: false });
       continue;
+    }
+    if (proveRes.code !== 0) {
+      throw new Error(`pinga prove-red failed for ${pingaTask}: ${proveRes.stdout}`);
     }
 
     // red is true - commit

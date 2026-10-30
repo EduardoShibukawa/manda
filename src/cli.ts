@@ -9,6 +9,7 @@ import { installLink } from "./install";
 import { contextMain } from "./context/port";
 import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
 import { redPlan } from "./red";
+import { checkPaidCall } from "./cost_cap";
 
 export interface VersionJson {
   schema_version: number;
@@ -247,6 +248,25 @@ export function run(args: string[]): number {
       return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
     };
 
+    const extractModel = (cmd: string[]): string | undefined => {
+      const idx = cmd.findIndex(c => c === "--model" || c === "-m");
+      if (idx !== -1 && idx + 1 < cmd.length) return cmd[idx + 1];
+      return undefined;
+    };
+    const model = extractModel(plannerCmd) ?? extractModel(fallbackCmd);
+    const startTime = new Date().toISOString();
+    const costCheck = checkPaidCall({
+      root,
+      since: startTime,
+      next_estimate_usd: 0.15,
+      model,
+      claudeCosts: [],
+    });
+    if (!costCheck.allow) {
+      console.log(JSON.stringify({ result: "blocked", reason: costCheck.reason || "budget" }));
+      return 1;
+    }
+
     let plannerRes = planner(plannerCmd);
     if (plannerRes.code !== 0) {
       plannerRes = planner(fallbackCmd);
@@ -310,7 +330,8 @@ export function run(args: string[]): number {
       return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
     };
     try {
-      redPlan({ root, plan: planArg, repo: repoArg, pinga, git });
+      const res = redPlan({ root, plan: planArg, repo: repoArg, pinga, git });
+      console.log(JSON.stringify(res));
       return 0;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
