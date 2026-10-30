@@ -62,7 +62,7 @@ export function buildReplanContext(options: ReplanContextOptions): string {
 export function replan(options: ReplanOptions): ReplanResult {
   const planDir = join(options.root, ".ginga", "plans", options.plan);
   const nextEstimateUsd = typeof options.nextEstimateUsd === "number" ? options.nextEstimateUsd : 0.15;
-  const since = options.since ?? new Date().toISOString();
+  const since = options.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const costCheck = checkPaidCall({
     root: options.root,
     since,

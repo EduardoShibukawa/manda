@@ -156,6 +156,7 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
 
   const eventsPath = process.env.GINGA_EVENTS;
   const attempts: Record<string, unknown>[] = [];
+  let firstAttemptAt: string | undefined;
   if (eventsPath && existsSync(eventsPath)) {
     for (const line of readFileSync(eventsPath, "utf8").split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -165,6 +166,12 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
           const data = ev.data;
           if (data && typeof data === "object" && !Array.isArray(data)) {
             attempts.push(data as Record<string, unknown>);
+          }
+          const ts = typeof ev.ts === "string" ? ev.ts : undefined;
+          if (ts) {
+            if (!firstAttemptAt || ts < firstAttemptAt) {
+              firstAttemptAt = ts;
+            }
           }
         }
       } catch {
@@ -229,7 +236,7 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
       "Judge the plan using only the files in the current directory (SPEC.md if present, PLAN.md, diff.patch, receipts.json, metrics.json). Return only JSON {\"verdict\":\"pass\"|\"fail\",\"findings\":string[]}.";
 
     const nextEstimateUsd = typeof opts.nextEstimateUsd === "number" ? opts.nextEstimateUsd : 0.15;
-    const since = opts.since ?? new Date().toISOString();
+    const since = opts.since ?? firstAttemptAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const costCheck = checkPaidCall({
       root,
       since,
