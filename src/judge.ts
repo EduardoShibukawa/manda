@@ -7,6 +7,7 @@ import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import type { RuntimeAdapter } from "./runtime/port";
 import { modelFamily } from "./runtime/port";
+import { checkPaidCall } from "./cost_cap";
 
 export interface JudgeOptions {
   root?: string;
@@ -15,6 +16,9 @@ export interface JudgeOptions {
   head?: string;
   models?: string;
   resolveRuntime?: (name: string) => RuntimeAdapter;
+  costCmd?: string[];
+  nextEstimateUsd?: number;
+  since?: string;
 }
 
 export interface JudgeResult {
@@ -223,6 +227,19 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
 
     const prompt =
       "Judge the plan using only the files in the current directory (SPEC.md if present, PLAN.md, diff.patch, receipts.json, metrics.json). Return only JSON {\"verdict\":\"pass\"|\"fail\",\"findings\":string[]}.";
+
+    const nextEstimateUsd = typeof opts.nextEstimateUsd === "number" ? opts.nextEstimateUsd : 0.15;
+    const since = opts.since ?? new Date().toISOString();
+    const costCheck = checkPaidCall({
+      root,
+      since,
+      next_estimate_usd: nextEstimateUsd,
+      model: chosen.model,
+      costCmd: opts.costCmd,
+    });
+    if (!costCheck.allow) {
+      return { exitCode: 1 };
+    }
 
     const adapter = resolveRuntime(chosen.runtime);
     let resultText = "";

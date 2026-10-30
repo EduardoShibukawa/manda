@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { checkPaidCall } from "./cost_cap";
 
 export type Runner = (argv: string[], cwd: string) => { code: number; stdout: string };
 
@@ -15,6 +16,10 @@ export interface ReplanContextOptions {
 export interface ReplanOptions extends ReplanContextOptions {
   planner: Runner;
   lint: Runner;
+  model?: string | null;
+  costCmd?: string[];
+  since?: string;
+  nextEstimateUsd?: number;
 }
 
 export interface ReplanResult {
@@ -56,6 +61,22 @@ export function buildReplanContext(options: ReplanContextOptions): string {
 
 export function replan(options: ReplanOptions): ReplanResult {
   const planDir = join(options.root, ".ginga", "plans", options.plan);
+  const nextEstimateUsd = typeof options.nextEstimateUsd === "number" ? options.nextEstimateUsd : 0.15;
+  const since = options.since ?? new Date().toISOString();
+  const costCheck = checkPaidCall({
+    root: options.root,
+    since,
+    next_estimate_usd: nextEstimateUsd,
+    model: options.model,
+    costCmd: options.costCmd,
+  });
+  if (!costCheck.allow) {
+    return {
+      result: "blocked",
+      reason: costCheck.reason || "budget",
+    };
+  }
+
   const context = buildReplanContext(options);
   const prompt = join(options.root, ".ginga", "prompts", "replan.md");
   const planner = options.planner(["--file", prompt, "--task", options.task, context], planDir);
