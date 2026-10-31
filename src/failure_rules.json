@@ -1,0 +1,9 @@
+[
+  { "class": "scope_drift", "action": "retry_clean", "pattern": "__pycache__|\\.pyc" },
+  { "class": "id_collision", "action": "auto_unblock", "pattern": "id_collision" },
+  { "class": "quota", "action": "skip_tier", "pattern": "usage limit|429|quota (exceeded|reached)" },
+  { "class": "gate_false_positive", "action": "replan", "pattern": "gate false positive|tests_frozen" },
+  { "class": "contract_conflict", "action": "replan", "pattern": "conflicting contract|CONTRACT_CONFLICT" },
+  { "class": "missing_dep", "action": "retry_clean", "pattern": "Cannot find module|missing_dep" },
+  { "class": "env_dependency", "action": "replan", "pattern": "command not found|env_dependency" }
+]
