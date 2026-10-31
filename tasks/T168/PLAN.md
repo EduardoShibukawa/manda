@@ -8,7 +8,7 @@ touch:
   - src/judge.ts
   - src/replan.ts
   - tests/cost_cap_wiring.test.ts
-  - tasks/T162/PLAN.md
+  - tasks/T168/PLAN.md
 tests_frozen: [tests/cost_cap_wiring.test.ts]
 ---
 

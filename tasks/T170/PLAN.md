@@ -5,7 +5,7 @@ done_when: "bun test tests/red_repo.test.ts"
 touch:
   - src/red.ts
   - tests/red_repo.test.ts
-  - tasks/T164/PLAN.md
+  - tasks/T170/PLAN.md
 tests_frozen: [tests/red_repo.test.ts]
 ---
 

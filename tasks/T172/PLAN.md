@@ -5,6 +5,6 @@ done_when: "bun test tests/red_taken.test.ts"
 touch:
   - src/red.ts
   - tests/red_taken.test.ts
-  - tasks/T166/PLAN.md
+  - tasks/T172/PLAN.md
 tests_frozen: [tests/red_taken.test.ts]
 ---
