@@ -5,11 +5,13 @@ import { basename, isAbsolute, join } from "node:path";
 import { loadBundle, resolvePlanDir, type TaskDoc } from "./bundle";
 import { emitEvent, type EventScope } from "./events";
 import { appendSpend, computeSpendFromJsonl, loadAskOwner, loadBudgetConfig, runSpendCmd, type Spend } from "./budget";
-import { buildAttemptPlan, getBreaker, hasFixedRuntime, loadEscalation } from "./escalation";import { runGate } from "./gate";
+import { buildAttemptPlan, getBreaker, hasFixedRuntime, loadEscalation } from "./escalation";
+import { runGate } from "./gate";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import type { FailureKind, RunRequest, RunResult, RuntimeAdapter } from "./runtime/port";
 import { createWorktree, mergeWorktreeToTrunk, removeWorktree } from "./worktree";
+import { checkPaidCall } from "./cost_cap";
 
 /**
  * `manda run <PLAN> [--task T]`: para cada TASK, na ordem do DAG, cria a
@@ -33,6 +35,8 @@ export interface RunOptions {
   resolveRuntime?: ResolveRuntime;
   spendCmd?: string;
   approve?: string | string[];
+  costCmd?: string[];
+  nextEstimateUsd?: number;
 }
 
 export interface TaskOutcome {
@@ -61,6 +65,9 @@ interface TaskContext {
   resolve: ResolveRuntime;
   spendCmd?: string;
   approved: Set<string>;
+  costCmd?: string[];
+  nextEstimateUsd?: number;
+  runStartedAt: string;
 }
 
 interface RuntimeChoice {
@@ -321,8 +328,31 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
       }),
       role: "executor",
     };
+    const modelForRequest = spec.model ?? (request.model as string | undefined) ?? (task as any).model;
     if (spec.model) request.model = spec.model;
+    else if (modelForRequest && (adapter.name === choice.name || spec.runtime === choice.name)) {
+      // keep as is
+    }
     if (spec.provider) request.provider = spec.provider;
+
+    const nextEstimateUsd = typeof ctx.nextEstimateUsd === "number" ? ctx.nextEstimateUsd : 0.15;
+    const costCheck = checkPaidCall({
+      root: ctx.root,
+      since: ctx.runStartedAt,
+      next_estimate_usd: nextEstimateUsd,
+      model: modelForRequest ?? (request.model as string | undefined) ?? (spec.model as string | undefined),
+      costCmd: ctx.costCmd,
+    });
+    if (!costCheck.allow) {
+      try {
+        await removeWorktree(repoRoot, worktreeId);
+      } catch {}
+      emitEvent("budget", { level: "cap", scope: "task", cap_usd: 0, spent_usd: 0 }, scope);
+      emitEvent("transition", { entity: "task", from: "running", to: "blocked", by: "system", via: "cli" }, scope);
+      emitEvent("blocker", { raised_by: "manda", blocker_id: randomUUID(), question: `TASK ${eventTask} bloqueada por budget`, options: ["retry", "skip", "abort"], scope: "task" }, scope);
+      console.log(`[${eventTask}] blocked runtime=${lastAdapterName}`);
+      return { task: eventTask, runtime: lastAdapterName, passed: false };
+    }
 
     const started = Date.now();
     let result: RunResult;
@@ -511,6 +541,9 @@ export async function runPlan(opts: RunOptions): Promise<RunSummary> {
     resolve: opts.resolveRuntime ?? defaultResolveRuntime,
     spendCmd: opts.spendCmd,
     approved,
+    costCmd: opts.costCmd,
+    nextEstimateUsd: opts.nextEstimateUsd,
+    runStartedAt: new Date().toISOString(),
   };
 
   const results: TaskOutcome[] = [];
