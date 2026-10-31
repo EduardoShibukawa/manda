@@ -101,6 +101,30 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   const planSuffix = plan.match(/PLAN-(\d{4})/)?.[1] || plan;
   const worktree = join(root, `${repo}-plan-${planSuffix}`);
 
+  // create worktree from main BEFORE building taken, so the scan of tasks/T*
+  // finds existing ids on first execution (worktree is created from main,
+  // which carries the repo's tasks/ directory).
+  const branch = `plan/${planSuffix}`;
+
+  // create worktree from main if missing
+  if (!existsSync(worktree)) {
+    // ensure repo exists as git repo? test sets up repo under root/manda and also creates worktree under root/manda-plan-0042
+    // try to create worktree from root's main or from repo's main
+    const res = git(["worktree", "add", "-b", branch, worktree, "main"], root);
+    if (res.code !== 0) {
+      // try in repo dir
+      const repoPath = join(root, repo);
+      if (existsSync(repoPath)) {
+        const res2 = git(["-C", repoPath, "worktree", "add", "-b", branch, worktree, "main"], repoPath);
+        if (res2.code !== 0) {
+          throw new Error(res2.stdout || String(res2.code));
+        }
+      } else {
+        throw new Error(res.stdout || String(res.code));
+      }
+    }
+  }
+
   // get taken pinga_task ids from queue if possible
   const taken: string[] = [];
   try {
@@ -122,6 +146,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     if (typeof pt === "string") taken.push(pt);
   }
   // also include ids from existing tasks/T*/ directories in the worktree
+  // (worktree now exists — created from main above — so this scans on first execution too)
   const tasksDir = join(worktree, "tasks");
   if (existsSync(tasksDir)) {
     for (const dir of readdirSync(tasksDir)) {
@@ -140,27 +165,6 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   const idMap = new Map<string, string>();
   for (let i = 0; i < toAllocate.length; i++) {
     idMap.set((toAllocate[i] as any).task, ids[i]);
-  }
-
-  const branch = `plan/${planSuffix}`;
-
-  // create worktree from main if missing
-  if (!existsSync(worktree)) {
-    // ensure repo exists as git repo? test sets up repo under root/manda and also creates worktree under root/manda-plan-0042
-    // try to create worktree from root's main or from repo's main
-    const res = git(["worktree", "add", "-b", branch, worktree, "main"], root);
-    if (res.code !== 0) {
-      // try in repo dir
-      const repoPath = join(root, repo);
-      if (existsSync(repoPath)) {
-        const res2 = git(["-C", repoPath, "worktree", "add", "-b", branch, worktree, "main"], repoPath);
-        if (res2.code !== 0) {
-          throw new Error(res2.stdout || String(res2.code));
-        }
-      } else {
-        throw new Error(res.stdout || String(res.code));
-      }
-    }
   }
 
   // copy frozen files from planDir/frozen/<repo> to worktree
