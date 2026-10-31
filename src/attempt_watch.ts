@@ -1,4 +1,6 @@
-import type { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { Database } from "bun:sqlite";
 
 import { breakerOf, recordFailure, recordSuccess } from "./breaker";
 import { emitEvent } from "./events";
@@ -25,13 +27,13 @@ function unique(values: string[]): string[] {
 
 /**
  * Modelos que podem entrar na próxima tentativa. A rota vem do ROUTING do
- * workspace; a lista final é apenas uma rota de emergência para o watcher
- * funcionar também quando o workspace ainda não tem `.ginga/models`.
+ * workspace (`root`); a lista final é apenas uma rota de emergência para o
+ * watcher funcionar também quando o workspace ainda não tem `.ginga/models`.
  */
-function freeModels(current: string): string[] {
+function freeModelsFrom(root: string, current: string): string[] {
   let routed: string[] = [];
   try {
-    const escalation = loadEscalation(process.cwd()) as EscalationWithPools | null;
+    const escalation = loadEscalation(root) as EscalationWithPools | null;
     routed = escalation?.pools?.free ?? [];
   } catch {}
 
@@ -40,6 +42,52 @@ function freeModels(current: string): string[] {
     .filter(Boolean);
 
   return unique([...routed, ...configured, ...FALLBACK_FREE_MODELS, current]);
+}
+
+function freeModels(current: string): string[] {
+  return freeModelsFrom(process.cwd(), current);
+}
+
+/** Caminho do state.db compartilhado; o ambiente vence para isolamento. */
+export function stateDbPath(root: string): string {
+  const configured = process.env.GINGA_STATE_DB;
+  if (configured && configured !== "") return configured;
+  return join(root, ".ginga", "state", "state.db");
+}
+
+/** Abre (criando se preciso) o state.db compartilhado da raiz do workspace. */
+export function openStateDb(root: string): Database {
+  const path = stateDbPath(root);
+  mkdirSync(dirname(path), { recursive: true });
+  return new Database(path);
+}
+
+/**
+ * Registra a falha no disjuntor compartilhado e escolhe o próximo modelo
+ * livre pela escada free da rota real da TASK (`root`). Não emite evento: o
+ * `attempt` é emitido uma única vez pelo fluxo principal (`run.ts`) ou pelo
+ * `watchAttempt`, evitando evento duplicado.
+ */
+export function planNextAfterFailure(o: {
+  root: string;
+  db: Database;
+  model: string;
+  reason: string;
+  now?: Date;
+}): { next: string | null; reason: string } {
+  const now = o.now ?? new Date();
+  recordFailure(o.db, o.model, o.reason, now);
+  const free = freeModelsFrom(o.root, o.model);
+  const picked = pickModel({
+    tier: "free",
+    pools: {},
+    free,
+    allowPaid: false,
+    capOk: false,
+    mitRepo: false,
+    breaker: (model) => breakerOf(o.db, model, now).state,
+  });
+  return { next: picked.model, reason: picked.reason };
 }
 
 async function safeProbe(
@@ -93,17 +141,14 @@ export async function watchAttempt(o: {
       } catch {}
     }
 
-    recordFailure(o.db, o.model, classified.reason, now);
-
-    const picked = pickModel({
-      tier: "free",
-      pools: {},
-      free,
-      allowPaid: false,
-      capOk: false,
-      mitRepo: false,
-      breaker: (model) => breakerOf(o.db, model, now).state,
+    const planned = planNextAfterFailure({
+      root: process.cwd(),
+      db: o.db,
+      model: o.model,
+      reason: classified.reason,
+      now,
     });
+    const picked = { model: planned.next, reason: planned.reason };
 
     let next = picked.model;
     if (!next) {

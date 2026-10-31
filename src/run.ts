@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
+import { openStateDb, planNextAfterFailure } from "./attempt_watch";
 import { loadBundle, resolvePlanDir, type TaskDoc } from "./bundle";
+import { recordSuccess } from "./breaker";
 import { emitEvent, type EventScope } from "./events";
 import { appendSpend, computeSpendFromJsonl, loadAskOwner, loadBudgetConfig, runSpendCmd, type Spend } from "./budget";
 import { buildAttemptPlan, getBreaker, hasFixedRuntime, loadEscalation } from "./escalation";import { runGate } from "./gate";
@@ -229,6 +231,10 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const breaker = useLadder ? getBreaker(ctx.root) : { same_reason: 3, ignore: [] };
   const ignore = new Set((breaker.ignore ?? []).map((v: any) => String(v)));
 
+  // PLAN-0029 TASK-11: com escada, o disjuntor vive no state.db compartilhado
+  // (`$GINGA_STATE_DB` ou `<root>/.ginga/state/state.db`).
+  const stateDb = useLadder ? openStateDb(ctx.root) : null;
+
   let passed = false;
   let failure: FailureKind | undefined;
   let lastAdapterName = attemptSpecs[0]!.runtime;
@@ -241,6 +247,8 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   for (const spec of attemptSpecs) {
     attemptNo += 1;
     lastAdapterName = spec.runtime;
+    // Nome completo do modelo na escada (ex.: `opencode/f1`): é a chave do disjuntor.
+    const fullModel = spec.entry || (spec.provider && spec.model ? `${spec.provider}/${spec.model}` : spec.model || "");
 
     // Budget check antes de cada tentativa.
     let spent: Spend;
@@ -384,6 +392,24 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
       cost_source: result.costUsd === undefined ? "unknown" : "metered",
     });
 
+    // Vigia da tentativa (PLAN-0029 TASK-09/11): a recusa final abre o
+    // disjuntor no state.db compartilhado e o próximo modelo livre sai da
+    // escada; o sucesso fecha o disjuntor. O evento `attempt` segue único,
+    // emitido aqui pelo fluxo principal.
+    let nextModel: string | null = null;
+    if (stateDb && fullModel) {
+      if (passed) {
+        recordSuccess(stateDb, fullModel);
+      } else if (attemptFailure) {
+        nextModel = planNextAfterFailure({
+          root: ctx.root,
+          db: stateDb,
+          model: fullModel,
+          reason: String(attemptFailure),
+        }).next;
+      }
+    }
+
     emitEvent(
       "attempt",
       {
@@ -394,6 +420,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
         attempt_n: attemptNo,
         passed,
         ...(failure ? { failure } : {}),
+        ...(nextModel ? { next_model: nextModel } : {}),
         duration_ms: durationMs,
         tokens_in: usage?.inputTokens ?? 0,
         tokens_out: usage?.outputTokens ?? 0,
