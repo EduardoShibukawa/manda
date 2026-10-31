@@ -1,0 +1,1 @@
+error: conflicting contract detected — src/merge.ts exporta `mergeWorktreeToTrunk` mas src/cli.ts espera `mergeToTrunk`. CONTRACT_CONFLICT no PLAN-0022.

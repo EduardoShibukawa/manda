@@ -1,0 +1,1 @@
+error: Cannot find module './src/blocked' imported from tests/blocked.test.ts. missing_dep: dependência não resolvida. retry_clean recomendado.

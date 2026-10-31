@@ -1,0 +1,1 @@
+error: command not found: opencode. env_dependency: runtime não instalado no PATH. replan recomendado (provider nvidia/minimax-m3.1-flash).

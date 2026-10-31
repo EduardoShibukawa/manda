@@ -1,0 +1,1 @@
+error: scope_drift detectado — __pycache__ encontrado em src/__pycache__/run.cpython-312.pyc, teste tests/scope_guard.test.ts mutado sem alteração no done_when

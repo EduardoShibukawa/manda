@@ -1,0 +1,1 @@
+error: gate false positive — tests_frozen altered: tests/foo.test.ts foi modificado durante a execução (BLOCKED: tests_frozen_changed)
