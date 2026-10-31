@@ -97,6 +97,10 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   const bundle = loadBundle(planDir);
   const tasks = bundle.tasks.filter((t) => (t as Record<string, unknown>).repo === repo);
 
+  // determine worktree (needed before building taken to scan tasks/T*)
+  const planSuffix = plan.match(/PLAN-(\d{4})/)?.[1] || plan;
+  const worktree = join(root, `${repo}-plan-${planSuffix}`);
+
   // get taken pinga_task ids from queue if possible
   const taken: string[] = [];
   try {
@@ -112,10 +116,19 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
       } catch {}
     }
   } catch {}
-  // also include already allocated pinga_task from the plan tasks
-  for (const t of tasks) {
+  // also include already allocated pinga_task from ALL bundle tasks (not just current repo)
+  for (const t of bundle.tasks) {
     const pt = (t as any).pinga_task;
     if (typeof pt === "string") taken.push(pt);
+  }
+  // also include ids from existing tasks/T*/ directories in the worktree
+  const tasksDir = join(worktree, "tasks");
+  if (existsSync(tasksDir)) {
+    for (const dir of readdirSync(tasksDir)) {
+      if (/^T\d+$/.test(dir)) {
+        taken.push(dir);
+      }
+    }
   }
 
   // allocate ids for tasks without pinga_task
@@ -129,9 +142,6 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     idMap.set((toAllocate[i] as any).task, ids[i]);
   }
 
-  // determine worktree
-  const planSuffix = plan.match(/PLAN-(\d{4})/)?.[1] || plan;
-  const worktree = join(root, `${repo}-plan-${planSuffix}`);
   const branch = `plan/${planSuffix}`;
 
   // create worktree from main if missing
