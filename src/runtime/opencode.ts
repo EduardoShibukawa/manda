@@ -106,7 +106,13 @@ export function createOpenCodeRuntime(opts: { spawn?: SpawnFn; bin?: string } = 
       const timeoutMs = req.timeoutMs || 180_000;
       const modelRef = model.includes("/") ? model : `${provider}/${model}`;
       const args = ["run", "--standalone", "--auto", "--format", "json", "-m", modelRef, req.prompt];
-      const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs });
+      const raw = await spawnFn([bin, ...args], {
+        cwd: req.worktree,
+        env: req.env,
+        timeoutMs,
+        onPid: req.onPid,
+        logPath: req.logPath,
+      });
       const parsed = parseOpenCodeOutput(raw.stdout);
 
       const passed = raw.exitCode === 0 && !parsed.isError && !raw.timedOut;

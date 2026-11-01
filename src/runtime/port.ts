@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 /** Vocabulário de falha do runtime port (SPEC 0007). */
 export type FailureKind = "done_when" | "quota_exhausted" | "timeout" | "infra" | "judge";
@@ -29,6 +31,14 @@ export interface RunRequest {
   timeoutMs?: number;
   env?: Record<string, string>;
   role?: string;
+  /**
+   * Expoe o pid do processo filho (PLAN-0029 TASK-12): a vigia ao vivo
+   * amostra `/proc/<pid>` e mata travados pelo pid. Opcional — adapter sem
+   * spawn rastreável simplesmente nunca chama.
+   */
+  onPid?: (pid: number) => void;
+  /** Log do stream desta tentativa (stdout/stderr são espelhados nele). */
+  logPath?: string;
 }
 
 export interface RunResult {
@@ -47,7 +57,13 @@ export interface RunResult {
 /** Spawn injetável: os testes gravam stdout/stderr sem subir processo real. */
 export type SpawnFn = (
   cmd: string[],
-  opts: { cwd: string; env?: Record<string, string>; timeoutMs?: number },
+  opts: {
+    cwd: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+    onPid?: (pid: number) => void;
+    logPath?: string;
+  },
 ) => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>;
 
 export interface RuntimeAdapter {
@@ -84,11 +100,18 @@ export function modelFamily(model: string): string {
 /** Spawn real (portado de `pi-harness/src/router/probe.ts` `defaultSpawn`). */
 export const defaultSpawn: SpawnFn = (cmd, opts) =>
   new Promise((resolve) => {
+    const logPath = opts.logPath;
+    if (logPath) {
+      mkdirSync(dirname(logPath), { recursive: true });
+      appendFileSync(logPath, "");
+    }
     const child = spawn(cmd[0], cmd.slice(1), {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...(opts.env ?? {}) },
     });
+    // A vigia ao vivo (PLAN-0029 TASK-12) acompanha o filho pelo pid.
+    opts.onPid?.(child.pid);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -99,8 +122,16 @@ export const defaultSpawn: SpawnFn = (cmd, opts) =>
         child.kill("SIGKILL");
       }, opts.timeoutMs);
     }
-    child.stdout?.on("data", (d) => (stdout += d.toString()));
-    child.stderr?.on("data", (d) => (stderr += d.toString()));
+    child.stdout?.on("data", (d) => {
+      const text = d.toString();
+      stdout += text;
+      if (logPath) appendFileSync(logPath, text);
+    });
+    child.stderr?.on("data", (d) => {
+      const text = d.toString();
+      stderr += text;
+      if (logPath) appendFileSync(logPath, text);
+    });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
       resolve({ exitCode: code ?? 1, stdout, stderr, timedOut });

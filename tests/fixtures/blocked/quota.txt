@@ -1,0 +1,1 @@
+error: BLOCKED: usage limit reached for provider nvidia/minimax-m3.1-flash. 429 Too Many Requests — quota exceeded. Próximo modelo.

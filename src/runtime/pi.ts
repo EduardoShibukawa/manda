@@ -195,7 +195,13 @@ export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): R
       const model = req.model;
       const timeoutMs = req.timeoutMs || 180_000;
       const args = ["--no-session", "--mode", "json", "--provider", provider, "--model", model, "-p", req.prompt];
-      const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs });
+      const raw = await spawnFn([bin, ...args], {
+        cwd: req.worktree,
+        env: req.env,
+        timeoutMs,
+        onPid: req.onPid,
+        logPath: req.logPath,
+      });
       const parsed = parsePiRunnerOutput(raw.stdout);
       // `resultText` é o texto do assistente (blocos `=== FILE: ===` legíveis ao
       // `manda plan`); sem mensagem do assistente, cai no stdout cru.

@@ -7,6 +7,7 @@ import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
 import { installLink } from "./install";
 import { contextMain } from "./context/port";
+import { breakerMain } from "./breaker_cli";
 import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
 import { redPlan } from "./red";
 import { checkPaidCall, extractTotalCostUsd } from "./cost_cap";
@@ -38,7 +39,7 @@ export function run(args: string[]): number {
 
   if (command === "help" || command === "--help" || command === "-h" || command === undefined) {
     console.log(
-      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  install                 Link manda into ~/.local/bin\n  run <PLAN> [--task T]   Run the tasks of a PLAN\n  context <cap> [arg] [--json]  Architectural context via provider (gira|rg|<comando>)",
+      "Usage: manda <command>\n\nCommands:\n  version [--json]        Show manda version\n  install                 Link manda into ~/.local/bin\n  run <PLAN> [--task T]   Run the tasks of a PLAN\n  context <cap> [arg] [--json]  Architectural context via provider (gira|rg|<comando>)\n  breaker status|reset    Inspect or reset model circuit breakers",
     );
     return 0;
   }
@@ -50,6 +51,10 @@ export function run(args: string[]): number {
       console.error(`aviso: ~/.local/bin não está no PATH; adicione-o para chamar "manda" direto`);
     }
     return 0;
+  }
+
+  if (command === "breaker") {
+    return breakerMain(rest);
   }
 
   if (command === "run") {

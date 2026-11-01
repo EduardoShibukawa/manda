@@ -1,0 +1,1 @@
+error: id_collision: task T167 já está em flight na fila (pinga_task duplicado). abortando attempt.
