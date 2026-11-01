@@ -1,15 +1,18 @@
 ---
-mode: mvp
-goal: "Disjuntor por modelo no state.db abre 10/30/120 min, vira half_open ao vencer e fecha no sucesso"
-done_when: "bun test tests/breaker.test.ts"
-tests_frozen: [tests/breaker.test.ts]
-touch: [src/breaker.ts, tests/breaker.test.ts]
-pinga_task: T169
+mode: padrao
+goal: "Guarda do planner no `manda replan` da CLI mede o gasto real (since=24h, claudeCosts com total_cost_usd do planner) e bloqueia antes de cada chamada paga do planner (primária e fallback), repassando model/since/claudeCosts para a guarda interna de replan()"
+done_when: "bun test tests/replan_cli_cost.test.ts tests/replan_cli.test.ts tests/cost_cap_wiring.test.ts tests/replan.test.ts"
+touch:
+  - src/cli.ts
+  - src/cost_cap.ts
+  - src/replan.ts
+  - tests/replan_cli_cost.test.ts
+  - tasks/T169/PLAN.md
+tests_frozen: [tests/replan_cli_cost.test.ts]
 ---
 
-## Context
-
-PLAN-0029 TASK-03. `breakerOf`/`recordFailure`/`recordSuccess` usam `bun:sqlite` num
-`.ginga/state/state.db` (caminho injetável). Fábrica de falhas: 1ª falha → 10 min,
-2ª → 30 min, 3ª → 120 min, 4ª+ capa no nível 3. `until` vencido → `half_open`.
-`recordSuccess` zera. Duas instâncias `Database` no mesmo arquivo veem o mesmo estado.
+## Contexto
+- Achado grave do judge (2026-10-30, refs AC e TASK-06): em src/cli.ts a guarda do planner usava since=agora e claudeCosts:[], o planner rodava antes da guarda de replan.ts, o fallback não re-checava e claudeCosts nunca recebia total_cost_usd.
+- RED em tests/replan_cli_cost.test.ts: gasto de 24h no opencode.db bloqueia sem chamar o claude; total_cost_usd 0.90 do planner bloqueia o fallback sem chamar o opencode; extractTotalCostUsd via import dinâmico.
+- Fix: since = agora−24h; claudeCosts acumulando extractTotalCostUsd de cada chamada; checkPaidCall antes da primária e antes do fallback; replan() recebe model/since/claudeCosts.
+- Não editar tests/cost_cap_wiring.test.ts, tests/cost_cap.test.ts, tests/replan_cli.test.ts nem fixtures; não mudar capCheck/spentUsd/checkPaidCall; sem TOTAL_CAP de ambiente; sem rede.

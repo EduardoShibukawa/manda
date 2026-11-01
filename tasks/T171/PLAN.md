@@ -1,13 +1,15 @@
 ---
-mode: mvp
-repo: manda
-plan: PLAN-0029-rota-de-falhas-e-disjuntor
-tier: free
-goal: "classifyBlocked mapeia o texto de BLOCKED/falha de gate para uma classe e uma ação, por regras de dados testadas com fixtures"
-done_when: "bun test tests/blocked.test.ts"
-tests_frozen: [tests/blocked.test.ts, tests/fixtures/blocked/scope_drift.txt, tests/fixtures/blocked/id_collision.txt, tests/fixtures/blocked/quota.txt, tests/fixtures/blocked/gate_false_positive.txt, tests/fixtures/blocked/contract_conflict.txt, tests/fixtures/blocked/missing_dep.txt, tests/fixtures/blocked/env_dependency.txt, tests/fixtures/blocked/other.txt]
-touch: [src/blocked.ts, src/failure_rules.json, tests/blocked.test.ts, tests/fixtures/blocked/, tasks/T171/PLAN.md]
-pinga_task: T171
+mode: padrao
+goal: "CLI manda red funciona em PLAN multi-repo herdando o filtro por repo de redPlan"
+done_when: "bun test tests/red_cli_repo.test.ts"
+touch:
+  - tests/red_cli_repo.test.ts
+  - tasks/T171/PLAN.md
+tests_frozen: [tests/red_cli_repo.test.ts]
 ---
-## Context
-PLAN-0029 TASK-07. `failure_rules.json` lista `{class, action, pattern}` em ordem; `classifyBlocked` devolve a primeira que casa. 8 fixtures cobrem todas as classes.
+
+## Contexto
+- Achado do judge (2026-10-30, simples; ref TASK-09): a CLI manda red chama redPlan e valida tests_frozen, mas herda a falta de filtro por repo: PLAN multi-repo falha com arquivo ausente de TASK de outro repo.
+- RED em tests/red_cli_repo.test.ts: PLAN com TASKs de dois repos, manda red --repo manda processa só as do manda e devolve JSON com as TASKs corretas. Sem o filtro de redPlan (T170) o CLI falha porque tenta validar frozen de outro repo.
+- Fix: herdado de T170 (src/red.ts). A CLI já passa repo: repoArg a redPlan; sem mudança em src/cli.ts.
+- Não editar tests/red_cli.test.ts.

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { routeMain } from "./routing";
 
@@ -7,6 +8,9 @@ import { runMerge } from "./merge";
 import { installLink } from "./install";
 import { contextMain } from "./context/port";
 import { breakerMain } from "./breaker_cli";
+import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
+import { redPlan } from "./red";
+import { checkPaidCall, extractTotalCostUsd } from "./cost_cap";
 
 export interface VersionJson {
   schema_version: number;
@@ -118,6 +122,248 @@ export function run(args: string[]): number {
       stderr: "inherit",
     });
     return child.exitCode ?? 1;
+  }
+
+  if (command === "replan") {
+    const positional = rest.filter((arg) => !arg.startsWith("--"));
+    const [planArg, taskArg] = positional;
+    if (!planArg || !taskArg) {
+      console.error("Usage: manda replan <PLAN> <TASK>");
+      return 2;
+    }
+
+    let rootArg: string | undefined;
+    for (let i = 0; i < rest.length; i += 1) {
+      const a = rest[i]!;
+      if (a === "--root") {
+        rootArg = rest[i + 1];
+        i += 1;
+        continue;
+      }
+      if (a.startsWith("--root=")) {
+        rootArg = a.slice("--root=".length);
+        continue;
+      }
+    }
+
+    const root = rootArg ? rootArg : process.cwd();
+    const planDir = join(root, ".ginga", "plans", planArg);
+    const promptPath = join(root, ".ginga", "prompts", "replan.md");
+    const promptText = existsSync(promptPath) ? readFileSync(promptPath, "utf8") : "";
+
+    const receipts: string[] = [];
+    const queueRes = Bun.spawnSync(["pinga", "queue", "--json"], {
+      cwd: root,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    if (queueRes.exitCode === 0) {
+      try {
+        const parsed = JSON.parse(queueRes.stdout.toString());
+        const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+        const relevant = tasks.filter((t: any) => t && (t.plan === planArg || t.task === taskArg));
+        for (const t of relevant) {
+          const receipt = t?.receipt;
+          if (typeof receipt === "string") receipts.push(receipt);
+          else if (receipt && typeof receipt === "object") {
+            const reason = (receipt as any).reason_code;
+            receipts.push(typeof reason === "string" ? reason : JSON.stringify(receipt));
+          }
+        }
+      } catch {
+        // contexto degradado: sem receipts
+      }
+    }
+    const lastReceipts = receipts.slice(-3);
+
+    let judge = "";
+    const judgeDir = join(planDir, "judge");
+    if (existsSync(judgeDir)) {
+      try {
+        for (const file of readdirSync(judgeDir).filter((f) => f.endsWith(".json")).sort()) {
+          judge += readFileSync(join(judgeDir, file), "utf8") + "\n";
+        }
+      } catch {
+        // contexto degradado: sem judge
+      }
+    }
+
+    const planNumber = planArg.match(/PLAN-(\d{4})/)?.[1] ?? planArg;
+    const branch = `plan/${planNumber}`;
+    const statRes = Bun.spawnSync(["git", "diff", `main...${branch}`, "--stat"], {
+      cwd: root,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    const diffRes = Bun.spawnSync(["git", "diff", `main...${branch}`], {
+      cwd: root,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    const diff = [statRes.stdout.toString().trim(), diffRes.stdout.toString()].filter(Boolean).join("\n\n");
+
+    let plannerCmd: string[] = ["claude", "-p", "--model", "claude-opus-5-5"];
+    const fallbackCmd: string[] = ["opencode", "run", "-m", "opencode-go/deepseek-v4-pro"];
+    try {
+      const raw = Bun.TOML.parse(readFileSync(join(root, ".ginga", "project.toml"), "utf8")) as any;
+      const roles = raw?.roles;
+      if (Array.isArray(roles?.planner)) {
+        plannerCmd = roles.planner.map((v: any) => String(v));
+      } else if (typeof roles?.planner === "string" && roles.planner.trim()) {
+        plannerCmd = roles.planner.trim().split(/\s+/);
+      }
+    } catch {
+      // usa padrão
+    }
+
+    const context = buildReplanContextImported({ root, plan: planArg, task: taskArg, receipts: lastReceipts, judge, diff });
+
+    const resolveBin = (name: string): string => {
+      if (name.includes("/")) return name;
+      const r = Bun.spawnSync(["which", name], { stdout: "pipe", stderr: "pipe", env: process.env });
+      const out = r.stdout.toString().trim();
+      return out || name;
+    };
+    const planner = (cmd: string[]): { code: number; stdout: string } => {
+      const bin = resolveBin(cmd[0]!);
+      const result = Bun.spawnSync([bin, ...cmd.slice(1), `${promptText}\n\n${context}`], {
+        cwd: planDir,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: process.env,
+      });
+      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+    };
+
+    const lint = (argv: string[], cwd: string): { code: number; stdout: string } => {
+      const result = Bun.spawnSync(["ginga", "lint", argv[1] ?? cwd, "--json"], {
+        cwd: root,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: process.env,
+      });
+      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+    };
+
+    const extractModel = (cmd: string[]): string | undefined => {
+      const idx = cmd.findIndex(c => c === "--model" || c === "-m");
+      if (idx !== -1 && idx + 1 < cmd.length) return cmd[idx + 1];
+      return undefined;
+    };
+    const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    let claudeCosts: number[] = [];
+    const primaryModel = extractModel(plannerCmd);
+    const costCheckPrimary = checkPaidCall({
+      root,
+      since: since24,
+      next_estimate_usd: 0.15,
+      model: primaryModel,
+      claudeCosts,
+    });
+    if (!costCheckPrimary.allow) {
+      console.log(JSON.stringify({ result: "blocked", reason: costCheckPrimary.reason || "budget" }));
+      return 1;
+    }
+
+    let plannerRes = planner(plannerCmd);
+    const costPrimary = extractTotalCostUsd(plannerRes.stdout);
+    if (costPrimary !== undefined) claudeCosts.push(costPrimary);
+
+    if (plannerRes.code !== 0) {
+      const fallbackModel = extractModel(fallbackCmd);
+      const costCheckFallback = checkPaidCall({
+        root,
+        since: since24,
+        next_estimate_usd: 0.15,
+        model: fallbackModel,
+        claudeCosts,
+      });
+      if (!costCheckFallback.allow) {
+        console.log(JSON.stringify({ result: "blocked", reason: costCheckFallback.reason || "budget" }));
+        return 1;
+      }
+      plannerRes = planner(fallbackCmd);
+      const costFallback = extractTotalCostUsd(plannerRes.stdout);
+      if (costFallback !== undefined) claudeCosts.push(costFallback);
+    }
+
+    const result = replan({
+      root,
+      plan: planArg,
+      task: taskArg,
+      receipts: lastReceipts,
+      judge,
+      diff,
+      model: primaryModel ?? extractModel(fallbackCmd),
+      since: since24,
+      claudeCosts,
+      planner: () => plannerRes,
+      lint,
+    });
+    console.log(JSON.stringify(result));
+    return result.result === "replanned" ? 0 : 1;
+  }
+
+  if (command === "red") {
+    const positional = rest.filter((a) => !a.startsWith("--"));
+    const planArg = positional[0];
+    if (!planArg) {
+      console.error("Usage: manda red <PLAN> --repo <repo> [--root <dir>]");
+      return 2;
+    }
+    let repoArg: string | undefined;
+    let rootArg: string | undefined;
+    for (let i = 0; i < rest.length; i += 1) {
+      const a = rest[i]!;
+      if (a === "--repo") {
+        repoArg = rest[i + 1];
+        i += 1;
+        continue;
+      }
+      if (a.startsWith("--repo=")) {
+        repoArg = a.slice("--repo=".length);
+        continue;
+      }
+      if (a === "--root") {
+        rootArg = rest[i + 1];
+        i += 1;
+        continue;
+      }
+      if (a.startsWith("--root=")) {
+        rootArg = a.slice("--root=".length);
+        continue;
+      }
+    }
+    if (!repoArg) {
+      console.error("Usage: manda red <PLAN> --repo <repo> [--root <dir>]");
+      return 2;
+    }
+    const root = rootArg ? rootArg : process.cwd();
+    const pinga = (argv: string[], cwd: string): { code: number; stdout: string } => {
+      const result = Bun.spawnSync(["pinga", ...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
+      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+    };
+    const git = (argv: string[], cwd: string): { code: number; stdout: string } => {
+      const result = Bun.spawnSync(["git", ...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
+      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+    };
+    try {
+      const res = redPlan({ root, plan: planArg, repo: repoArg, pinga, git });
+      console.log(JSON.stringify(res));
+      return 0;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(msg);
+      return 1;
+    }
   }
 
   if (command === "context") {
