@@ -6,6 +6,7 @@ import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import type { RuntimeAdapter } from "./runtime/port";
 import { topoSort } from "./bundle";
+import { lessonsForTouch, type LessonRef } from "./plan_lessons";
 
 export interface PlanFromArtifactOptions {
   root?: string;
@@ -224,6 +225,30 @@ function runGingaLint(stagingDir: string): { ok: boolean; output: string } {
   }
 }
 
+/** PLAN-0013 TASK-07: junta o `touch` de todas as TASKs geradas. */
+function collectTouch(files: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const name of Object.keys(files)) {
+    if (!/^TASK-.+\.md$/.test(name)) continue;
+    const fm = parseFrontmatter(files[name]!);
+    if (Array.isArray(fm.touch)) {
+      for (const t of fm.touch) {
+        const s = String(t).trim();
+        if (s && !out.includes(s)) out.push(s);
+      }
+    }
+  }
+  return out;
+}
+
+/** PLAN-0013 TASK-07: anexa a seção `## Lessons` ao PLAN.md com as lições do touch. */
+function appendLessonsSection(planMd: string, lessons: LessonRef[]): string {
+  const lines = lessons.map((l) => `- [${l.id} — ${l.title}](${l.path})`);
+  const section = `\n## Lessons\n\n${lines.join("\n")}\n`;
+  const stripped = planMd.replace(/\n+$/, "\n");
+  return stripped + section;
+}
+
 function forceDraft(content: string): string {
   if (/^status:/m.test(content)) {
     return content.replace(/^status:.*$/m, "status: draft");
@@ -354,6 +379,14 @@ export async function planFromArtifact(
     const files = parseFiles(resultText);
     const v = validate(files, planId);
 
+    // PLAN-0013 TASK-07: lições do touch das TASKs (antes do lint, para o
+    // `ginga lint` continuar sendo a última chamada ao ginga da tentativa).
+    let lessons: LessonRef[] = [];
+    if (v.ok) {
+      const touch = collectTouch(files);
+      lessons = touch.length > 0 ? lessonsForTouch(root, touch) : [];
+    }
+
     let lintOk = true;
     let lintOutput = "";
     if (v.ok && Object.keys(files).length > 0) {
@@ -372,6 +405,9 @@ export async function planFromArtifact(
     }
 
     if (v.ok) {
+      if (lessons.length > 0 && files["PLAN.md"]) {
+        files["PLAN.md"] = appendLessonsSection(files["PLAN.md"], lessons);
+      }
       validFiles = files;
       break;
     }
