@@ -2,15 +2,19 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
-import { openStateDb, planNextAfterFailure } from "./attempt_watch";
+import { openStateDb, planNextAfterFailure, watchAttempt } from "./attempt_watch";
 import { loadBundle, resolvePlanDir, type TaskDoc } from "./bundle";
-import { recordSuccess } from "./breaker";
+import { breakerOf, recordSuccess } from "./breaker";
 import { emitEvent, type EventScope } from "./events";
 import { appendSpend, computeSpendFromJsonl, loadAskOwner, loadBudgetConfig, runSpendCmd, type Spend } from "./budget";
 import { buildAttemptPlan, getBreaker, hasFixedRuntime, loadEscalation } from "./escalation";import { runGate } from "./gate";
+import { killByPid } from "./pipeline";
+import { procSampler, watchCfg } from "./proc_sample";
+import { probe } from "./probe";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
-import type { FailureKind, RunRequest, RunResult, RuntimeAdapter } from "./runtime/port";
+import { defaultSpawn, type FailureKind, type RunRequest, type RunResult, type RuntimeAdapter } from "./runtime/port";
+import type { RunObs } from "./run_state";
 import { createWorktree, mergeWorktreeToTrunk, removeWorktree } from "./worktree";
 
 /**
@@ -27,6 +31,20 @@ const BASE_BRANCH = "main";
 /** O teste injeta um adapter; a CLI usa o resolver real. */
 export type ResolveRuntime = (name: string) => RuntimeAdapter;
 
+/**
+ * Hooks da vigia ao vivo (PLAN-0029 TASK-12): o `manda run` monta os reais
+ * (`proc_sample` + `probe` + `killByPid`) e o teste injeta os seus. Sem
+ * `watch`, a vigia real acompanha a tentativa.
+ */
+export interface WatchHooks {
+  cfg: { patience_min: number; no_progress_min: number };
+  sample: () => Promise<RunObs>;
+  probe: (model: string) => Promise<{ ok: boolean }>;
+  /** Mata o processo da tentativa pelo pid exposto por `onPid`. */
+  kill: (pid: number) => void;
+  sleep: (ms: number) => Promise<void>;
+}
+
 export interface RunOptions {
   root: string;
   plan: string;
@@ -35,6 +53,8 @@ export interface RunOptions {
   resolveRuntime?: ResolveRuntime;
   spendCmd?: string;
   approve?: string | string[];
+  /** Injeção de teste dos hooks da vigia (default: vigia real). */
+  watch?: WatchHooks;
 }
 
 export interface TaskOutcome {
@@ -63,6 +83,7 @@ interface TaskContext {
   resolve: ResolveRuntime;
   spendCmd?: string;
   approved: Set<string>;
+  watch?: WatchHooks;
 }
 
 interface RuntimeChoice {
@@ -192,6 +213,60 @@ function repoOf(task: TaskDoc, root: string): string {
   return isAbsolute(repo) ? repo : join(root, repo);
 }
 
+/**
+ * Vigia real da tentativa (PLAN-0029 TASK-12): cpu de `/proc/<pid>/stat`,
+ * mudança de arquivo por `git status`, stream pelo tamanho dos eventos e
+ * probe do modelo pelo `defaultSpawn`. O pid chega por `onPid`; se a
+ * tentativa settleia antes dele, a amostragem desiste (o sampler lança e a
+ * vigia encerra sem tocar em disjuntor nem evento).
+ */
+function realWatchHooks(o: {
+  root: string;
+  worktree: string;
+  cfg: { patience_min: number; no_progress_min: number };
+  startedAt: number;
+  pidReady: Promise<number>;
+  stopped: Promise<void>;
+}): WatchHooks {
+  const abandoned = o.stopped.then(() => null);
+  let sampler: (() => Promise<RunObs>) | null = null;
+  let samplerPid = -1;
+  return {
+    cfg: o.cfg,
+    sample: async () => {
+      const pid = await Promise.race([o.pidReady, abandoned]);
+      if (pid === null) throw new Error("vigia: tentativa encerrada sem pid rastreável");
+      if (!sampler || samplerPid !== pid) {
+        sampler = procSampler({
+          pid,
+          worktree: o.worktree,
+          streamPath: process.env.GINGA_EVENTS,
+          startedAt: o.startedAt,
+        });
+        samplerPid = pid;
+      }
+      return sampler();
+    },
+    probe: (model) =>
+      probe(model, async (argv, probeOpts) => {
+        const raw = await defaultSpawn(argv, { cwd: o.worktree, timeoutMs: probeOpts.timeout_ms });
+        return { code: raw.exitCode, stdout: raw.stdout };
+      }),
+    kill: (pid) => {
+      killByPid(pid);
+    },
+    // Sleep interrompível: a parada acorda a vigia antes do próximo tick.
+    sleep: (ms) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        void o.stopped.then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      }),
+  };
+}
+
 async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const fullId = String(task.task);
   const eventTask = shortTaskId(fullId);
@@ -249,6 +324,25 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     lastAdapterName = spec.runtime;
     // Nome completo do modelo na escada (ex.: `opencode/f1`): é a chave do disjuntor.
     const fullModel = spec.entry || (spec.provider && spec.model ? `${spec.provider}/${spec.model}` : spec.model || "");
+
+    // Disjuntor aberto no state.db: pula o modelo sem chamar o adapter.
+    // Meio-aberto pode tentar (a janela de teste do breaker).
+    if (stateDb && fullModel && breakerOf(stateDb, fullModel, new Date()).state === "open") {
+      emitEvent(
+        "attempt",
+        {
+          runtime: spec.runtime,
+          ...(spec.model ? { model: spec.model } : {}),
+          tier: spec.tier,
+          attempt_n: attemptNo,
+          passed: false,
+          breaker: "open",
+          via: "breaker",
+        },
+        scope,
+      );
+      continue;
+    }
 
     // Budget check antes de cada tentativa.
     let spent: Spend;
@@ -333,35 +427,109 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     if (spec.provider) request.provider = spec.provider;
 
     const started = Date.now();
-    let result: RunResult;
-    try {
-      result = await adapter.run(request);
-    } catch (error) {
-      result = {
-        passed: false,
-        failure: "infra",
-        stdout: "",
-        stderr: error instanceof Error ? error.message : String(error),
+
+    // Vigia ao vivo (PLAN-0029 TASK-12): enquanto a tentativa roda, amostra o
+    // processo e troca de modelo sem esperar o adapter devolver.
+    const watching = Boolean(stateDb && fullModel);
+    let pidResolve: (pid: number) => void = () => {};
+    const pidReady = new Promise<number>((resolve) => {
+      pidResolve = resolve;
+    });
+    let stopResolve: () => void = () => {};
+    const watchStopped = new Promise<void>((resolve) => {
+      stopResolve = resolve;
+    });
+    let stopWatch = false;
+    // Pid exposto pelo adapter (via `onPid`); `null` enquanto não chega.
+    let pid: number | null = null;
+    if (watching) {
+      request.onPid = (pidValue: number) => {
+        pid = pidValue;
+        pidResolve(pidValue);
       };
     }
-    const durationMs = Date.now() - started;
 
-    let attemptPassed = result.passed;
-    let attemptFailure: FailureKind | undefined = attemptPassed ? undefined : (result.failure ?? "infra");
-
-    if (attemptPassed) {
-      const gate = await runGate({
-        task: `${ctx.plan}/${eventTask}`,
-        plan: ctx.plan,
-        repo: repoRoot,
+    const hooks: WatchHooks = ctx.watch ??
+      realWatchHooks({
+        root: ctx.root,
         worktree: worktree.path,
-        doneWhen: stringField(task, "done_when"),
-        base: BASE_BRANCH,
-        testsFrozen: listField(task, "tests_frozen"),
+        cfg: watchCfg(ctx.root),
+        startedAt: started,
+        pidReady,
+        stopped: watchStopped,
       });
-      if (!gate.passed) {
-        attemptPassed = false;
-        attemptFailure = "done_when";
+
+    // Adapter que nunca rejeita: a falha de infra entra como resultado.
+    const runPromise: Promise<RunResult> = (async () => {
+      try {
+        return await adapter.run(request);
+      } catch (error) {
+        return {
+          passed: false,
+          failure: "infra",
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })();
+
+    // A vigia corre em paralelo; `watcherOutcome` só é preenchido quando ela
+    // vence (trocou de modelo ou esgotou a fila) — nesse caso ela já matou,
+    // já abriu o disjuntor e já emitiu o `attempt` (sem duplicata aqui).
+    let watcherOutcome: { outcome: "switched" | "waiting"; next?: string } | null = null;
+    const watchPromise: Promise<void> = watching
+      ? watchAttempt({
+          sample: hooks.sample,
+          kill: () => {
+            // O watcher chama kill sem argumentos: o pid vem do `onPid`.
+            if (pid !== null) hooks.kill(pid);
+          },
+          probe: hooks.probe,
+          sleep: hooks.sleep,
+          db: stateDb!,
+          model: fullModel,
+          cfg: hooks.cfg,
+          stop: () => stopWatch,
+        }).then(
+          (r) => {
+            if (r.outcome !== "done") watcherOutcome = r;
+          },
+          () => {},
+        )
+      : Promise.resolve();
+
+    const result = await runPromise;
+    const durationMs = Date.now() - started;
+    // A tentativa settleou: a vigia não pode mais matar nem registrar nada.
+    stopWatch = true;
+    stopResolve();
+    if (watching) await watchPromise;
+    const watcherActed = watcherOutcome !== null;
+
+    let attemptPassed: boolean;
+    let attemptFailure: FailureKind | undefined;
+    if (watcherActed) {
+      // O watcher venceu: o run settleia como falha (morto pelo pid).
+      attemptPassed = false;
+      attemptFailure = result.failure ?? "infra";
+    } else {
+      attemptPassed = result.passed;
+      attemptFailure = attemptPassed ? undefined : (result.failure ?? "infra");
+
+      if (attemptPassed) {
+        const gate = await runGate({
+          task: `${ctx.plan}/${eventTask}`,
+          plan: ctx.plan,
+          repo: repoRoot,
+          worktree: worktree.path,
+          doneWhen: stringField(task, "done_when"),
+          base: BASE_BRANCH,
+          testsFrozen: listField(task, "tests_frozen"),
+        });
+        if (!gate.passed) {
+          attemptPassed = false;
+          attemptFailure = "done_when";
+        }
       }
     }
 
@@ -395,9 +563,10 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     // Vigia da tentativa (PLAN-0029 TASK-09/11): a recusa final abre o
     // disjuntor no state.db compartilhado e o próximo modelo livre sai da
     // escada; o sucesso fecha o disjuntor. O evento `attempt` segue único,
-    // emitido aqui pelo fluxo principal.
+    // emitido aqui pelo fluxo principal (quando a vigia venceu, ela já emitiu
+    // o dele e não duplicamos aqui).
     let nextModel: string | null = null;
-    if (stateDb && fullModel) {
+    if (stateDb && fullModel && !watcherActed) {
       if (passed) {
         recordSuccess(stateDb, fullModel);
       } else if (attemptFailure) {
@@ -410,25 +579,35 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
       }
     }
 
-    emitEvent(
-      "attempt",
-      {
-        runtime: adapter.name,
-        ...(model ? { model } : {}),
-        family: adapter.family(model ?? ""),
-        tier: spec.tier,
-        attempt_n: attemptNo,
-        passed,
-        ...(failure ? { failure } : {}),
-        ...(nextModel ? { next_model: nextModel } : {}),
-        duration_ms: durationMs,
-        tokens_in: usage?.inputTokens ?? 0,
-        tokens_out: usage?.outputTokens ?? 0,
-        cost_usd: result.costUsd ?? 0,
-        cost_source: result.costUsd === undefined ? "unknown" : "metered",
-      },
-      scope,
-    );
+    if (!watcherActed) {
+      emitEvent(
+        "attempt",
+        {
+          runtime: adapter.name,
+          ...(model ? { model } : {}),
+          family: adapter.family(model ?? ""),
+          tier: spec.tier,
+          attempt_n: attemptNo,
+          passed,
+          ...(failure ? { failure } : {}),
+          ...(nextModel ? { next_model: nextModel } : {}),
+          duration_ms: durationMs,
+          tokens_in: usage?.inputTokens ?? 0,
+          tokens_out: usage?.outputTokens ?? 0,
+          cost_usd: result.costUsd ?? 0,
+          cost_source: result.costUsd === undefined ? "unknown" : "metered",
+        },
+        scope,
+      );
+    }
+
+    if (watcherActed) {
+      // A vigia venceu: ela já matou pelo pid, abriu o disjuntor, escolheu o
+      // próximo e emitiu o `attempt`. Sem próximo modelo (`waiting`) o laço
+      // acabou; senão, o próximo spec entra sem evento duplicado.
+      if (watcherOutcome!.outcome === "waiting") break;
+      continue;
+    }
 
     if (passed) {
       emitEvent(
@@ -538,6 +717,7 @@ export async function runPlan(opts: RunOptions): Promise<RunSummary> {
     resolve: opts.resolveRuntime ?? defaultResolveRuntime,
     spendCmd: opts.spendCmd,
     approved,
+    ...(opts.watch ? { watch: opts.watch } : {}),
   };
 
   const results: TaskOutcome[] = [];

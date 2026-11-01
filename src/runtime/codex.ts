@@ -241,7 +241,7 @@ export function createCodexRuntime(opts: { spawn?: SpawnFn; bin?: string } = {})
         req.prompt,
       ];
 
-      const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs });
+      const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs, onPid: req.onPid });
       const parsed = parseCodexOutput(raw.stdout);
       const passed = raw.exitCode === 0 && !parsed.isError && !raw.timedOut;
 

@@ -98,7 +98,7 @@ export function createClaudeRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}
         args.push("--model", req.model);
       }
 
-      const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs });
+      const raw = await spawnFn([bin, ...args], { cwd: req.worktree, env: req.env, timeoutMs, onPid: req.onPid });
       const parsed = parseClaudeOutput(raw.stdout);
       const passed = raw.exitCode === 0 && !parsed.isError && !raw.timedOut;
 

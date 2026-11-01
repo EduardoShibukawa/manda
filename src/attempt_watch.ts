@@ -114,11 +114,21 @@ export async function watchAttempt(o: {
   model: string;
   cfg: { patience_min: number; no_progress_min: number };
   sleep: (ms: number) => Promise<void>;
+  /**
+   * Parada opcional (PLAN-0029 TASK-12): o fluxo principal liga quando a
+   * tentativa settleia sozinha. A vigia honra o sinal entre awaits e desiste
+   * sem matar nem registrar nada — o `attempt` do fluxo principal é o único.
+   * Ausente (TASK-09) = nunca parar.
+   */
+  stop?: () => boolean;
 }): Promise<{ outcome: "done" | "switched" | "waiting"; next?: string }> {
   const free = freeModels(o.model);
+  const stopped = (): boolean => o.stop?.() ?? false;
 
   for (;;) {
+    if (stopped()) return { outcome: "done" };
     const observation = await o.sample();
+    if (stopped()) return { outcome: "done" };
     const classified = classifyRun(observation, o.cfg);
 
     if (classified.state === "ok") {
@@ -128,6 +138,7 @@ export async function watchAttempt(o: {
 
     if (classified.state === "devagar" || classified.state === "na_fila") {
       await o.sleep(ATTEMPT_POLL_MS);
+      if (stopped()) return { outcome: "done" };
       continue;
     }
 
@@ -136,6 +147,9 @@ export async function watchAttempt(o: {
 
     if (classified.state === "travado") {
       probeOk = (await safeProbe(o.probe, o.model)).ok;
+      // A tentativa pode ter settleado durante o probe: aí o kill e o disjuntor
+      // são do fluxo principal, não da vigia.
+      if (stopped()) return { outcome: "done" };
       try {
         o.kill();
       } catch {}
@@ -156,7 +170,7 @@ export async function watchAttempt(o: {
         free,
         probe: (model) => safeProbe(o.probe, model),
         sleep: o.sleep,
-        stop: () => false,
+        stop: stopped,
       });
     }
 

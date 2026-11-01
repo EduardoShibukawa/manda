@@ -29,6 +29,12 @@ export interface RunRequest {
   timeoutMs?: number;
   env?: Record<string, string>;
   role?: string;
+  /**
+   * Expoe o pid do processo filho (PLAN-0029 TASK-12): a vigia ao vivo
+   * amostra `/proc/<pid>` e mata travados pelo pid. Opcional — adapter sem
+   * spawn rastreável simplesmente nunca chama.
+   */
+  onPid?: (pid: number) => void;
 }
 
 export interface RunResult {
@@ -47,7 +53,7 @@ export interface RunResult {
 /** Spawn injetável: os testes gravam stdout/stderr sem subir processo real. */
 export type SpawnFn = (
   cmd: string[],
-  opts: { cwd: string; env?: Record<string, string>; timeoutMs?: number },
+  opts: { cwd: string; env?: Record<string, string>; timeoutMs?: number; onPid?: (pid: number) => void },
 ) => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>;
 
 export interface RuntimeAdapter {
@@ -89,6 +95,8 @@ export const defaultSpawn: SpawnFn = (cmd, opts) =>
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...(opts.env ?? {}) },
     });
+    // A vigia ao vivo (PLAN-0029 TASK-12) acompanha o filho pelo pid.
+    opts.onPid?.(child.pid);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
