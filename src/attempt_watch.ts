@@ -44,8 +44,8 @@ function freeModelsFrom(root: string, current: string): string[] {
   return unique([...routed, ...configured, ...FALLBACK_FREE_MODELS, current]);
 }
 
-function freeModels(current: string): string[] {
-  return freeModelsFrom(process.cwd(), current);
+function freeModels(root: string, current: string): string[] {
+  return freeModelsFrom(root, current);
 }
 
 /** Caminho do state.db compartilhado; o ambiente vence para isolamento. */
@@ -121,9 +121,15 @@ export async function watchAttempt(o: {
    * Ausente (TASK-09) = nunca parar.
    */
   stop?: () => boolean;
+  /** A vigia assumiu a falha: o fluxo principal não pode mais abortá-la. */
+  onTakeOver?: () => void;
+  /** Raiz do workspace para resolver a escada free do plano real. */
+  root?: string;
 }): Promise<{ outcome: "done" | "switched" | "waiting"; next?: string }> {
-  const free = freeModels(o.model);
-  const stopped = (): boolean => o.stop?.() ?? false;
+  const root = o.root ?? process.cwd();
+  const free = freeModels(root, o.model);
+  let ownsOutcome = false;
+  const stopped = (): boolean => !ownsOutcome && (o.stop?.() ?? false);
 
   for (;;) {
     if (stopped()) return { outcome: "done" };
@@ -150,13 +156,24 @@ export async function watchAttempt(o: {
       // A tentativa pode ter settleado durante o probe: aí o kill e o disjuntor
       // são do fluxo principal, não da vigia.
       if (stopped()) return { outcome: "done" };
+      if (probeOk) {
+        // Modelo saudável e lento não é morto: continua sendo observado.
+        await o.sleep(ATTEMPT_POLL_MS);
+        if (stopped()) return { outcome: "done" };
+        continue;
+      }
+      ownsOutcome = true;
+      o.onTakeOver?.();
       try {
         o.kill();
       } catch {}
+    } else if (classified.state === "recusado") {
+      ownsOutcome = true;
+      o.onTakeOver?.();
     }
 
     const planned = planNextAfterFailure({
-      root: process.cwd(),
+      root,
       db: o.db,
       model: o.model,
       reason: classified.reason,

@@ -24,6 +24,12 @@ export interface ProcSampleTarget {
   streamPath?: string;
   /** Início da tentativa (epoch ms): sem evento anterior, ele é a referência. */
   startedAt: number;
+  /** Modelo sondado quando a tentativa parecer parada. */
+  model?: string;
+  /** Probe barato do modelo: o resultado real entra em `probe_ok`. */
+  probe?: (model: string) => Promise<{ ok: boolean }>;
+  /** Limites de paciência e ausência de progresso da vigia. */
+  cfg: { patience_min: number; no_progress_min: number };
 }
 
 /** utime+stime (jiffies) de `/proc/<pid>/stat`; lança se o pid não existe. */
@@ -101,13 +107,26 @@ export function procSampler(target: ProcSampleTarget): () => Promise<RunObs> {
     const lastEventMs = Math.max(mtimeMs(target.streamPath), target.startedAt);
     const sinceLastEventS = Math.max(0, (now - lastEventMs) / 1000);
 
+    const filesChanged = worktreeChanged(target.worktree);
+    let probeOk: boolean | null = null;
+    const noProgress = sinceLastEventS >= target.cfg.no_progress_min * 60;
+    const shouldProbe =
+      target.probe !== undefined &&
+      (streamBytes === 0 || (noProgress && cpuPct < 1 && !filesChanged));
+    if (shouldProbe) {
+      try {
+        probeOk = (await target.probe(target.model ?? "")).ok;
+      } catch {
+        probeOk = false;
+      }
+    }
+
     return {
       since_last_event_s: sinceLastEventS,
       stream_bytes: streamBytes,
       cpu_pct: cpuPct,
-      files_changed: worktreeChanged(target.worktree),
-      // O probe é passo separado da vigia (só quando `travado`): aqui não sabemos.
-      probe_ok: false,
+      files_changed: filesChanged,
+      probe_ok: probeOk,
       exit: null,
       stderr_tail: "",
     };

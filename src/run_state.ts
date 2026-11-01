@@ -5,7 +5,7 @@ export type RunObs = {
   stream_bytes: number;
   cpu_pct: number;
   files_changed: boolean;
-  probe_ok: boolean;
+  probe_ok: boolean | null;
   exit: number | null;
   stderr_tail: string;
 };

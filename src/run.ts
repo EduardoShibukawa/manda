@@ -227,15 +227,28 @@ function repoOf(task: TaskDoc, root: string): string {
  * tentativa settleia antes dele, a amostragem desiste (o sampler lança e a
  * vigia encerra sem tocar em disjuntor nem evento).
  */
-function realWatchHooks(o: {
+export function realWatchHooks(o: {
   root: string;
   worktree: string;
   cfg: { patience_min: number; no_progress_min: number };
   startedAt: number;
   pidReady: Promise<number>;
   stopped: Promise<void>;
+  /** Stream da própria tentativa; nunca o log compartilhado de eventos. */
+  streamPath?: string;
+  /** Modelo sondado pelo sampler quando a tentativa parecer parada. */
+  model?: string;
+  /** Probe injetável; por padrão usa o runner real. */
+  probe?: (model: string) => Promise<{ ok: boolean }>;
 }): WatchHooks {
   const abandoned = o.stopped.then(() => null);
+  const probeModel =
+    o.probe ??
+    ((model: string) =>
+      probe(model, async (argv, probeOpts) => {
+        const raw = await defaultSpawn(argv, { cwd: o.worktree, timeoutMs: probeOpts.timeout_ms });
+        return { code: raw.exitCode, stdout: raw.stdout };
+      }));
   let sampler: (() => Promise<RunObs>) | null = null;
   let samplerPid = -1;
   return {
@@ -247,18 +260,17 @@ function realWatchHooks(o: {
         sampler = procSampler({
           pid,
           worktree: o.worktree,
-          streamPath: process.env.GINGA_EVENTS,
+          streamPath: o.streamPath,
           startedAt: o.startedAt,
+          model: o.model,
+          probe: probeModel,
+          cfg: o.cfg,
         });
         samplerPid = pid;
       }
       return sampler();
     },
-    probe: (model) =>
-      probe(model, async (argv, probeOpts) => {
-        const raw = await defaultSpawn(argv, { cwd: o.worktree, timeoutMs: probeOpts.timeout_ms });
-        return { code: raw.exitCode, stdout: raw.stdout };
-      }),
+    probe: probeModel,
     kill: (pid) => {
       killByPid(pid);
     },
@@ -333,8 +345,28 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     const fullModel = spec.entry || (spec.provider && spec.model ? `${spec.provider}/${spec.model}` : spec.model || "");
 
     // Disjuntor aberto no state.db: pula o modelo sem chamar o adapter.
-    // Meio-aberto pode tentar (a janela de teste do breaker).
-    if (stateDb && fullModel && breakerOf(stateDb, fullModel, new Date()).state === "open") {
+    // Meio-aberto pode tentar (a janela de teste do breaker). Se todos os
+    // candidatos estiverem abertos, a primeira tentativa ainda entra para a
+    // vigia assumir a falha e o waitForFree procurar um probe saudável.
+    const allCandidatesOpen =
+      stateDb !== null &&
+      attemptSpecs.every((candidate) => {
+        const candidateModel =
+          candidate.entry ||
+          (candidate.provider && candidate.model
+            ? `${candidate.provider}/${candidate.model}`
+            : candidate.model || "");
+        return (
+          candidateModel !== "" &&
+          breakerOf(stateDb!, candidateModel, new Date()).state === "open"
+        );
+      });
+    if (
+      stateDb &&
+      fullModel &&
+      breakerOf(stateDb, fullModel, new Date()).state === "open" &&
+      !(allCandidatesOpen && attemptNo === 1)
+    ) {
       emitEvent(
         "attempt",
         {
@@ -429,6 +461,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
         worktree: worktree.path,
       }),
       role: "executor",
+      logPath: join(ctx.root, "runs", ctx.plan, `${eventTask}-attempt-${attemptNo}.log`),
     };
     const modelForRequest = spec.model ?? (request.model as string | undefined) ?? (task as any).model;
     if (spec.model) request.model = spec.model;
@@ -487,6 +520,8 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
         startedAt: started,
         pidReady,
         stopped: watchStopped,
+        streamPath: request.logPath,
+        model: fullModel,
       });
 
     // Adapter que nunca rejeita: a falha de infra entra como resultado.
@@ -507,6 +542,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     // vence (trocou de modelo ou esgotou a fila) — nesse caso ela já matou,
     // já abriu o disjuntor e já emitiu o `attempt` (sem duplicata aqui).
     let watcherOutcome: { outcome: "switched" | "waiting"; next?: string } | null = null;
+    let watcherTookOver = false;
     const watchPromise: Promise<void> = watching
       ? watchAttempt({
           sample: hooks.sample,
@@ -520,6 +556,10 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
           model: fullModel,
           cfg: hooks.cfg,
           stop: () => stopWatch,
+          onTakeOver: () => {
+            watcherTookOver = true;
+          },
+          root: ctx.root,
         }).then(
           (r) => {
             if (r.outcome !== "done") watcherOutcome = r;
@@ -531,8 +571,11 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     const result = await runPromise;
     const durationMs = Date.now() - started;
     // A tentativa settleou: a vigia não pode mais matar nem registrar nada.
-    stopWatch = true;
-    stopResolve();
+    // Depois de a vigia assumir a falha, seu waitForFree precisa continuar.
+    if (!watcherTookOver) {
+      stopWatch = true;
+      stopResolve();
+    }
     if (watching) await watchPromise;
     const watcherActed = watcherOutcome !== null;
 
