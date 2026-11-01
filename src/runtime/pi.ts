@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { guardDir, guardOn } from "./env";
 import { classifyRunnerFailure, toFailureKind } from "./failure";
 import {
   defaultSpawn,
@@ -194,7 +197,25 @@ export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): R
       const provider = req.provider;
       const model = req.model;
       const timeoutMs = req.timeoutMs || 180_000;
-      const args = ["--no-session", "--mode", "json", "--provider", provider, "--model", model, "-p", req.prompt];
+      const args = ["--no-session", "--mode", "json", "--provider", provider, "--model", model];
+      // Guard de segredos (PLAN-0033 TASK-07), falha fechada: guard ligado e
+      // extensão ausente → a tentativa NÃO é spawnada (guard_missing).
+      const genv = req.env ?? {};
+      if (guardOn(genv)) {
+        const guardExt = join(guardDir(genv), "contrib", "guard", "pi.ts");
+        if (!existsSync(guardExt)) {
+          const msg = `[guard] ausente em ${guardExt} com guard ligado (GINGA_GUARD_LANE=${genv.GINGA_GUARD_LANE}): tentativa não spawnada (guard_missing)`;
+          return {
+            passed: false,
+            failure: "guard_missing" as FailureKind,
+            stdout: "",
+            stderr: msg,
+            resultText: msg,
+          };
+        }
+        args.push("-e", guardExt);
+      }
+      args.push("-p", req.prompt);
       const raw = await spawnFn([bin, ...args], {
         cwd: req.worktree,
         env: req.env,
