@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { guardDir, guardOn } from "./env";
 import { classifyRunnerFailure, toFailureKind } from "./failure";
 import {
@@ -173,6 +173,50 @@ export function extractPiAssistantText(stdout: string): string | undefined {
   return text;
 }
 
+const SCOPE_GUARD_EXTENSION = resolve(import.meta.dir, "pi_scope_guard.ts");
+
+function parseJsonStringList(raw: string | undefined): string[] | undefined {
+  if (raw === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((item) => typeof item === "string" && item.length > 0)
+    ) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `[routing].scope_guard` só desliga quando explicitamente vale `false`. */
+function scopeGuardEnabled(env: Record<string, string>): boolean {
+  const root = env.G;
+  if (!root) return true;
+  const configPath = join(root, ".ginga", "project.toml");
+  if (!existsSync(configPath)) return true;
+  try {
+    const config = Bun.TOML.parse(readFileSync(configPath, "utf8")) as {
+      routing?: { scope_guard?: unknown };
+    };
+    return config.routing?.scope_guard !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** Escopo declarado pela TASK; lista vazia ou inválida mantém o runtime legado. */
+function taskScope(env: Record<string, string>): { touch: string[]; frozen: string[] } | undefined {
+  const touch = parseJsonStringList(env.MANDA_TASK_TOUCH);
+  if (!touch || touch.length === 0) return undefined;
+  const frozen =
+    env.MANDA_TASK_FROZEN === undefined ? [] : parseJsonStringList(env.MANDA_TASK_FROZEN);
+  if (!frozen) return undefined;
+  return { touch, frozen };
+}
+
 export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): RuntimeAdapter {
   const spawnFn = opts.spawn ?? defaultSpawn;
   const bin = opts.bin ?? "pi";
@@ -215,10 +259,23 @@ export function createPiRuntime(opts: { spawn?: SpawnFn; bin?: string } = {}): R
         }
         args.push("-e", guardExt);
       }
+      // Guarda de escopo (PLAN-0034): só liga quando a TASK declara touch.
+      // A extensão é do próprio manda e recebe o escopo derivado do frontmatter.
+      const scope = scopeGuardEnabled(genv) ? taskScope(genv) : undefined;
+      let spawnEnv = req.env;
+      if (scope) {
+        args.push("-e", SCOPE_GUARD_EXTENSION);
+        spawnEnv = {
+          ...genv,
+          MANDA_SCOPE_TOUCH: JSON.stringify(scope.touch),
+          MANDA_SCOPE_FROZEN: JSON.stringify(scope.frozen),
+          MANDA_SCOPE_ROOT: req.worktree,
+        };
+      }
       args.push("-p", req.prompt);
       const raw = await spawnFn([bin, ...args], {
         cwd: req.worktree,
-        env: req.env,
+        env: spawnEnv,
         timeoutMs,
         onPid: req.onPid,
         logPath: req.logPath,
