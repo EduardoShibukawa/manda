@@ -14,6 +14,7 @@ import { procSampler, watchCfg } from "./proc_sample";
 import { probe } from "./probe";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
+import { runtimeEnv } from "./runtime/env";
 import { defaultSpawn, type FailureKind, type RunRequest, type RunResult, type RuntimeAdapter } from "./runtime/port";
 import type { RunObs } from "./run_state";
 import { createWorktree, mergeWorktreeToTrunk, removeWorktree } from "./worktree";
@@ -453,6 +454,14 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     const adapter = ctx.resolve(spec.runtime);
     lastAdapterName = adapter.name;
 
+    // Sessão do guard de segredos (PLAN-0033 TASK-09): o `manda run` real
+    // sempre roda com o guard ligado. A marca exportada pelo processo
+    // (`lane.sh`/`dispatch-task.sh` via `guard_export`) vence; sem ela, deriva
+    // `<PLAN>/<TASK>` em minúsculas (ex.: `plan-0033/task-07`) — a derivação é
+    // o padrão, nunca o opt-in.
+    const guardLane =
+      process.env.GINGA_GUARD_LANE ?? `${ctx.plan}/${shortTaskId(fullId)}`.toLowerCase();
+
     const request: RunRequest = {
       worktree: worktree.path,
       prompt: formatTaskPrompt(task, {
@@ -462,6 +471,10 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
       }),
       role: "executor",
       logPath: join(ctx.root, "runs", ctx.plan, `${eventTask}-attempt-${attemptNo}.log`),
+      // `runtimeEnv` carimba GINGA_GUARD (padrão `enforce`) e GINGA_GUARD_LOG
+      // (<root>/handoffs/guard.events.jsonl) quando há lane; GINGA_GUARD=off do
+      // processo deixa o guard inerte (sessão do dono).
+      env: runtimeEnv({ ...process.env, G: ctx.root, GINGA_GUARD_LANE: guardLane }),
     };
     const modelForRequest = spec.model ?? (request.model as string | undefined) ?? (task as any).model;
     if (spec.model) request.model = spec.model;

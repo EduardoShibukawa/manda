@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { guardDir, guardOn } from "./env";
 import { classifyRunnerFailure, toFailureKind } from "./failure";
 import {
   defaultSpawn,
@@ -106,9 +109,28 @@ export function createOpenCodeRuntime(opts: { spawn?: SpawnFn; bin?: string } = 
       const timeoutMs = req.timeoutMs || 180_000;
       const modelRef = model.includes("/") ? model : `${provider}/${model}`;
       const args = ["run", "--standalone", "--auto", "--format", "json", "-m", modelRef, req.prompt];
+      // Guard de segredos (PLAN-0033 TASK-07), falha fechada: guard ligado e
+      // plugin ausente → a tentativa NÃO é spawnada (guard_missing); ligado e
+      // presente → OPENCODE_CONFIG_DIR aponta para o config dir do guard.
+      const genv = req.env ?? {};
+      let env = req.env;
+      if (guardOn(genv)) {
+        const guardPlugin = join(guardDir(genv), "contrib", "guard", "opencode.ts");
+        if (!existsSync(guardPlugin)) {
+          const msg = `[guard] ausente em ${guardPlugin} com guard ligado (GINGA_GUARD_LANE=${genv.GINGA_GUARD_LANE}): tentativa não spawnada (guard_missing)`;
+          return {
+            passed: false,
+            failure: "guard_missing" as FailureKind,
+            stdout: "",
+            stderr: msg,
+            resultText: msg,
+          };
+        }
+        env = { ...genv, OPENCODE_CONFIG_DIR: join(guardDir(genv), "contrib", "guard", "opencode-config") };
+      }
       const raw = await spawnFn([bin, ...args], {
         cwd: req.worktree,
-        env: req.env,
+        env,
         timeoutMs,
         onPid: req.onPid,
         logPath: req.logPath,
