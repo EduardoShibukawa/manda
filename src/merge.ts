@@ -11,7 +11,7 @@ import { loadProject } from "./project";
  *      worktree e da branch (WIP sem commit vai antes para `<plan>/wip/*.patch`)
  *   2  branch sem worktree | main não está na main | mudanças não commitadas
  *   10 sem veredito (judge/<repo>.json) ou veredito de outro HEAD
- *   11 item do judge com regression=true
+ *   11 veredito fail do judge, ou item com regression=true
  *   12 `[commands].gate` recusou as TASKs do diff main...HEAD (padrão: `pinga gate`)
  *   13 falha de teste nova na branch que a main não tem
  *   14 main ganhou falha depois do merge -> `git revert -m 1` automático
@@ -246,6 +246,9 @@ export function runMerge(opts: MergeOptions): MergeResult {
   if (items.length === 0) {
     return finish(17, `veredito sem nenhum item para ${repoName} (passe vazio): falta TASK com repo: ${repoName} no PLAN`);
   }
+  // veredito fail nunca mergeia (T906): o judge cego grava o fail em disco e
+  // o condutor decide o replan; o gate só não deixa passar.
+  if (judge?.verdict === "fail") return finish(11, "veredito fail do judge");
   const regressions = items.filter((i) => !!(i as { regression?: unknown })?.regression).length;
   if (regressions > 0) return finish(11, `${regressions} item(ns) com regression=true`);
 

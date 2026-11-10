@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { resolvePlanDir } from "./bundle";
+import { planBranchOf, planRepos, resolvePlanDir } from "./bundle";
+import { worktreeOfBranch } from "./worktree";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import type { RuntimeAdapter } from "./runtime/port";
@@ -19,6 +20,8 @@ export interface JudgeOptions {
   costCmd?: string[];
   nextEstimateUsd?: number;
   since?: string;
+  /** Ignora o veredito já gravado para o mesmo HEAD (T906). */
+  forceRejudge?: boolean;
 }
 
 export interface JudgeResult {
@@ -136,6 +139,37 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
     return { exitCode: 2 };
   }
 
+  // T906: repos do PLAN com a branch `plan/NNNN` em worktree. Com eles (e sem
+  // --base/--head explícitos) o diff do bundle sai de cada repo e o veredito é
+  // gravado por repo em `judge/<repo>.json`, que é o que o `manda merge` lê.
+  const planBranch = planBranchOf(dir);
+  const targets =
+    planBranch && opts.base === undefined && opts.head === undefined
+      ? planRepos(dir, root)
+          .map((r) => ({ ...r, wt: worktreeOfBranch(r.path, planBranch) }))
+          .filter((t): t is { name: string; path: string; wt: string } => typeof t.wt === "string" && t.wt !== "")
+          .map((t) => ({
+            ...t,
+            head: Bun.spawnSync(["git", "-C", t.wt, "rev-parse", "HEAD"], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim(),
+          }))
+      : [];
+  const verdictOf = (name: string) => join(dir, "judge", `${name}.json`);
+
+  // um veredito por HEAD: se todo repo já tem veredito do HEAD atual, reaproveita
+  if (targets.length > 0 && !opts.forceRejudge && process.env.FORCE_REJUDGE !== "1") {
+    const stored = targets.map((t) => {
+      try {
+        const j = JSON.parse(readFileSync(verdictOf(t.name), "utf8")) as { head?: unknown; judge?: { verdict?: unknown } };
+        return j.head === t.head ? j.judge?.verdict : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    if (stored.every((v) => v === "pass" || v === "fail")) {
+      return { exitCode: stored.every((v) => v === "pass") ? 0 : 1 };
+    }
+  }
+
   const project = loadProject(root);
   const runtimes = (project.runtimes ?? {}) as Record<string, unknown>;
 
@@ -217,11 +251,19 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
       if (sp) writeFileSync(join(tmp, "SPEC.md"), readFileSync(sp, "utf8"));
     }
 
-    const diffRun = Bun.spawnSync(["git", "-C", root, "diff", `${base}..${head}`], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    writeFileSync(join(tmp, "diff.patch"), diffRun.stdout.toString());
+    if (targets.length > 0) {
+      const parts = targets.map((t) => {
+        const d = Bun.spawnSync(["git", "-C", t.wt, "diff", "main...HEAD"], { stdout: "pipe", stderr: "pipe" });
+        return `# repo: ${t.name}\n${d.stdout.toString()}`;
+      });
+      writeFileSync(join(tmp, "diff.patch"), parts.join("\n"));
+    } else {
+      const diffRun = Bun.spawnSync(["git", "-C", root, "diff", `${base}..${head}`], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      writeFileSync(join(tmp, "diff.patch"), diffRun.stdout.toString());
+    }
 
     const receiptsCmd = (typeof project.commands.receipts === "string" && project.commands.receipts.trim())
       ? project.commands.receipts
@@ -278,7 +320,7 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
       ? project.commands.judge_seal.trim()
       : "pinga judge {plan} --verdict {file} --judge-model {model} --planner-model {planner} --usage-file {transcript}";
     let sealExit = 0;
-    if (sealCmd) {
+    if (sealCmd && sealCmd !== "none") {
       const cmd = sealCmd
         .replaceAll("{plan}", join(dir, "PLAN.md"))
         .replaceAll("{file}", verdictPath)
@@ -291,6 +333,26 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
 
     if (sealExit !== 0) {
       return { exitCode: sealExit };
+    }
+
+    // veredito por repo, no formato do merge: `head` + `judge.items` com
+    // `regression`. O judge cego não vê o repo, então nunca marca regressão:
+    // essa é a parte do gate que compara a suíte da branch com a da main.
+    if (targets.length > 0) {
+      mkdirSync(join(dir, "judge"), { recursive: true });
+      const ok = verdict.verdict === "pass";
+      const evidence = verdict.findings.length > 0 ? verdict.findings.join("; ") : "sem achados";
+      for (const t of targets) {
+        writeFileSync(
+          verdictOf(t.name),
+          JSON.stringify({
+            head: t.head,
+            blind: true,
+            model: chosen.model,
+            judge: { verdict: verdict.verdict, items: [{ ref: "PLAN", ok, regression: false, evidence }], summary: evidence },
+          }),
+        );
+      }
     }
     return { exitCode: verdict.verdict === "pass" ? 0 : 1 };
   } finally {
