@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
-# Stub de `pinga` para os testes de tests/merge_gate.test.ts.
+# Stub de `pinga` para os testes de merge.
 # `queue`  -> imprime o JSON apontado por STUB_QUEUE_FILE (default: {"tasks":[]})
+# `gate`   -> como o `pinga gate` real: 0 se todas as TASKs pedidas estão `done`
+#             em STUB_QUEUE_FILE, senão 12 com {"ok":false,"pending":[...]}
 # `ledger` -> exit $STUB_LEDGER_EXIT (default 0)
 set -u
 case "${1:-}" in
   queue) cat "${STUB_QUEUE_FILE:-/dev/null}" || echo '{"tasks":[]}';;
+  gate)
+    shift
+    exec bun -e '
+      const args = process.argv.slice(1);
+      const want = [];
+      for (let i = 0; i < args.length; i++) { if (args[i] === "--root" || args[i] === "--ledger") i++; else want.push(args[i]); }
+      let tasks = [];
+      try { tasks = JSON.parse(require("fs").readFileSync(process.env.STUB_QUEUE_FILE, "utf8")).tasks ?? []; } catch {}
+      const done = new Set(tasks.filter((t) => t.state === "done").map((t) => t.task));
+      const pending = want.filter((t) => !done.has(t));
+      console.log(JSON.stringify({ ok: pending.length === 0, pending }));
+      process.exit(pending.length === 0 ? 0 : 12);
+    ' -- "$@";;
   ledger) exit "${STUB_LEDGER_EXIT:-0}";;
 esac
 exit 0
