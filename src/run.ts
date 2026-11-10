@@ -17,7 +17,7 @@ import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import { runtimeEnv } from "./runtime/env";
 import { defaultSpawn, type FailureKind, type RunRequest, type RunResult, type RuntimeAdapter } from "./runtime/port";
 import type { RunObs } from "./run_state";
-import { createWorktree, mergeWorktreeToTrunk, removeWorktree } from "./worktree";
+import { createWorktree, mergeWorktreeInto, mergeWorktreeToTrunk, removeWorktree, worktreeOfBranch } from "./worktree";
 import { checkPaidCall } from "./cost_cap";
 
 /**
@@ -310,7 +310,14 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   );
 
   const worktreeId = fullId.toLowerCase();
-  const worktree = await createWorktree(repoRoot, worktreeId, BASE_BRANCH);
+  // T905: com a branch do PLAN (`plan/NNNN`, criada pelo `manda red`) em
+  // checkout numa worktree, a TASK nasce dela e volta para ela; a main só
+  // anda pelo `manda merge`. Sem ela, vale o fluxo antigo (base = main).
+  const planNumber = ctx.plan.match(/PLAN-(\d{4})/)?.[1];
+  const planBranch = planNumber ? `plan/${planNumber}` : null;
+  const planWorktree = planBranch ? worktreeOfBranch(repoRoot, planBranch) : null;
+  const baseBranch = planBranch && planWorktree ? planBranch : BASE_BRANCH;
+  const worktree = await createWorktree(repoRoot, worktreeId, baseBranch);
 
   type AttemptSpec = { tier: string; entry: string; provider: string; model: string; runtime: string };
   let builtSpecs: AttemptSpec[] = [];
@@ -609,8 +616,9 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
           repo: repoRoot,
           worktree: worktree.path,
           doneWhen: stringField(task, "done_when"),
-          base: BASE_BRANCH,
+          base: baseBranch,
           testsFrozen: listField(task, "tests_frozen"),
+          gateId: stringField(task, "pinga_task"),
         });
         if (!gate.passed) {
           attemptPassed = false;
@@ -621,7 +629,8 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
 
     if (attemptPassed) {
       try {
-        await mergeWorktreeToTrunk(repoRoot, worktreeId, BASE_BRANCH);
+        if (planWorktree && baseBranch !== BASE_BRANCH) await mergeWorktreeInto(repoRoot, worktreeId, planWorktree);
+        else await mergeWorktreeToTrunk(repoRoot, worktreeId, BASE_BRANCH);
         await removeWorktree(repoRoot, worktreeId);
       } catch (error) {
         attemptPassed = false;

@@ -18,6 +18,8 @@ export interface GateInput {
   base?: string;
   /** Testes congelados que o executor não pode tocar. */
   testsFrozen?: string[];
+  /** Id pelo qual o gate conhece a TASK (placeholder `{gate_id}`, T905). */
+  gateId?: string;
   /** Comando de verificação explícito; vence a config do projeto. */
   verify?: string;
 }
@@ -97,7 +99,8 @@ function applyPlaceholders(command: string, input: GateInput): string {
     .replaceAll("{task}", input.task)
     .replaceAll("{plan}", input.plan)
     .replaceAll("{repo}", input.repo)
-    .replaceAll("{worktree}", input.worktree);
+    .replaceAll("{worktree}", input.worktree)
+    .replaceAll("{gate_id}", input.gateId ?? "");
 }
 
 /** `[commands].verify` da config do projeto, lido do trunk. A worktree é

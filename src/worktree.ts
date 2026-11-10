@@ -126,3 +126,46 @@ export async function removeWorktree(root: string, taskId: string): Promise<void
     rmSync(path, { recursive: true, force: true });
   }
 }
+
+/**
+ * Worktree onde `branch` está em checkout neste repo, ou null (T905). É como
+ * o `manda run` acha a branch do PLAN criada pelo `manda red`.
+ */
+export function worktreeOfBranch(root: string, branch: string): string | null {
+  let last = "";
+  for (const line of git(["-C", root, "worktree", "list", "--porcelain"], root).stdout.split("\n")) {
+    if (line.startsWith("worktree ")) last = line.slice("worktree ".length);
+    else if (line === `branch refs/heads/${branch}`) return last;
+  }
+  return null;
+}
+
+/**
+ * Como `mergeWorktreeToTrunk`, mas o destino é outra worktree (a da branch do
+ * PLAN): comita o pendente da TASK e faz `merge --no-ff` lá. A main não anda.
+ */
+export async function mergeWorktreeInto(
+  root: string,
+  taskId: string,
+  targetWorktree: string,
+): Promise<{ commitSha: string }> {
+  const path = worktreePath(root, taskId);
+  const branch = worktreeBranch(taskId);
+  if (!existsSync(path)) throw new Error(`Worktree não encontrada em ${path}`);
+
+  if (git(["-C", path, "status", "--porcelain"], root).stdout.trim()) {
+    git(["-C", path, "add", "."], root);
+    const commit = git(["-C", path, "commit", "-m", `feat(${taskId}): implement atomic task code`], root);
+    if (commit.code !== 0) throw new Error(`Falha ao comitar a worktree: ${commit.stderr.trim()}`);
+  }
+
+  const merge = git(
+    ["-C", targetWorktree, "merge", "--no-ff", branch, "-m", `feat(${taskId}): merge atomic task`],
+    targetWorktree,
+  );
+  if (merge.code !== 0) {
+    git(["-C", targetWorktree, "merge", "--abort"], targetWorktree);
+    throw new Error(`Falha no merge de ${branch} em ${targetWorktree}: ${merge.stderr.trim() || merge.stdout.trim()}`);
+  }
+  return { commitSha: git(["-C", targetWorktree, "rev-parse", "HEAD"], targetWorktree).stdout.trim() };
+}
