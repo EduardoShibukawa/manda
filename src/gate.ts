@@ -20,6 +20,8 @@ export interface GateInput {
   testsFrozen?: string[];
   /** Id pelo qual o gate conhece a TASK (placeholder `{gate_id}`, T905). */
   gateId?: string;
+  /** Raiz do workspace (bundle): segunda fonte de `[commands].verify` (T908). */
+  root?: string;
   /** Comando de verificação explícito; vence a config do projeto. */
   verify?: string;
 }
@@ -105,12 +107,16 @@ function applyPlaceholders(command: string, input: GateInput): string {
 
 /** `[commands].verify` da config do projeto, lido do trunk. A worktree é
  * mutável pelo executor e não pode definir o próprio gate. */
-function configuredVerify(repo: string): string | undefined {
-  try {
-    const verify = loadProject(repo).commands.verify;
-    if (typeof verify === "string" && verify.trim()) return verify;
-  } catch {
-    // config ilegível não derruba o gate: cai no done_when
+function configuredVerify(repo: string, root?: string): string | undefined {
+  // trunk do repo primeiro; depois a raiz do workspace, onde o bundle e o
+  // project.toml costumam morar (T908). A worktree nunca define o próprio gate.
+  for (const dir of root && root !== repo ? [repo, root] : [repo]) {
+    try {
+      const verify = loadProject(dir).commands.verify;
+      if (typeof verify === "string" && verify.trim()) return verify;
+    } catch {
+      // config ilegível não derruba o gate: segue para a próxima / done_when
+    }
   }
   return undefined;
 }
@@ -151,7 +157,7 @@ export async function runGate(input: GateInput): Promise<GateResult> {
     };
   }
 
-  const raw = input.verify ?? configuredVerify(input.repo) ?? input.doneWhen;
+  const raw = input.verify ?? configuredVerify(input.repo, input.root) ?? input.doneWhen;
   const command = applyPlaceholders(raw, input);
 
   const r = Bun.spawnSync(["bash", "-lc", command], {

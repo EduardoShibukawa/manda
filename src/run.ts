@@ -317,6 +317,9 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const planBranch = planNumber ? `plan/${planNumber}` : null;
   const planWorktree = planBranch ? worktreeOfBranch(repoRoot, planBranch) : null;
   const baseBranch = planBranch && planWorktree ? planBranch : BASE_BRANCH;
+  // T908: worktree de TASK é efêmera. A que sobrou de uma tentativa que
+  // falhou ou foi interrompida sai antes de criar a nova.
+  await removeWorktree(repoRoot, worktreeId);
   const worktree = await createWorktree(repoRoot, worktreeId, baseBranch);
 
   type AttemptSpec = { tier: string; entry: string; provider: string; model: string; runtime: string };
@@ -619,6 +622,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
           base: baseBranch,
           testsFrozen: listField(task, "tests_frozen"),
           gateId: stringField(task, "pinga_task"),
+          root: ctx.root,
         });
         if (!gate.passed) {
           attemptPassed = false;
