@@ -145,6 +145,26 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     const pt = (t as any).pinga_task;
     if (typeof pt === "string") taken.push(pt);
   }
+  // T910: e os `pinga_task` de TODOS os PLANs do bundle. O id que outro PLAN
+  // aberto alocou vive só na branch dele; sem isto, dois PLANs no mesmo repo
+  // recebiam o mesmo T<N> e o receipt de um fechava ou travava o outro.
+  const plansDir = join(root, ".ginga", "plans");
+  try {
+    for (const dir of readdirSync(plansDir)) {
+      let files: string[] = [];
+      try {
+        files = readdirSync(join(plansDir, dir)).filter((f) => f.startsWith("TASK-") && f.endsWith(".md"));
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        const pt = parseFrontmatter(readFileSync(join(plansDir, dir, f), "utf8")).pinga_task;
+        if (typeof pt === "string" && /^T\d+$/i.test(pt.trim())) taken.push(pt.trim());
+      }
+    }
+  } catch {
+    // sem bundle legível: valem as outras fontes
+  }
   // also include ids from existing tasks/T*/ directories in the worktree
   // (worktree now exists — created from main above — so this scans on first execution too)
   const tasksDir = join(worktree, "tasks");
