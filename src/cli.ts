@@ -12,7 +12,7 @@ import { breakerMain } from "./breaker_cli";
 import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
 import { redPlan } from "./red";
 import { checkPaidCall, extractTotalCostUsd } from "./cost_cap";
-import { projectCommand, runProjectCommand } from "./project";
+import { gateCli, projectCommand, runProjectCommand } from "./project";
 import { DEFAULT_LINT } from "./plan";
 
 export interface VersionJson {
@@ -195,7 +195,7 @@ export function run(args: string[]): number {
     const promptText = existsSync(promptPath) ? readFileSync(promptPath, "utf8") : "";
 
     const receipts: string[] = [];
-    const queueRes = Bun.spawnSync(["pinga", "queue", "--json"], {
+    const queueRes = Bun.spawnSync([...gateCli(root), "queue", "--json"], {
       cwd: root,
       stdin: "ignore",
       stdout: "pipe",
@@ -384,7 +384,7 @@ export function run(args: string[]): number {
     }
     const root = rootArg ? rootArg : process.cwd();
     const pinga = (argv: string[], cwd: string): { code: number; stdout: string } => {
-      const result = Bun.spawnSync(["pinga", ...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
+      const result = Bun.spawnSync([...gateCli(root), ...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
       return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
     };
     const git = (argv: string[], cwd: string): { code: number; stdout: string } => {

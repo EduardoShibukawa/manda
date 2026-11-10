@@ -35,6 +35,16 @@ export function projectCommand(root: string, key: string, dflt: string): string 
   return cmd === "none" ? null : cmd;
 }
 
+/**
+ * Binário do gate (T911): `[commands].gate_cli`, padrão `pinga`. É o prefixo
+ * do comando (pode trazer argumentos); quem chama acrescenta o resto.
+ */
+export function gateCli(root: string): string[] {
+  const cmd = projectCommand(root, "gate_cli", "pinga") ?? "pinga";
+  const parts = cmd.split(/\s+/).filter(Boolean);
+  return parts.length > 0 ? parts : ["pinga"];
+}
+
 /** Aspas simples de shell: o valor chega ao comando como um argumento só. */
 function shellQuote(v: string): string {
   return `'${v.replace(/'/g, `'\\''`)}'`;
