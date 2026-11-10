@@ -4,7 +4,7 @@
  * entrada acidental no stdin (SPAWN_STDIN="ignore").
  */
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 export const SPAWN_STDIN = "ignore" as const;
 
@@ -26,14 +26,20 @@ export function siblingGuardDir(parent: string = SIBLINGS): string {
 /** Raiz do checkout apontado pelo `ginga` do PATH (symlink para
  * `<repo>/bin/ginga.ts`), se ela tiver `contrib/guard`. */
 function pathGuardDir(pathEnv: string | undefined): string | null {
-  try {
-    const bin = Bun.which("ginga", { PATH: pathEnv ?? "" });
-    if (!bin) return null;
-    const repo = dirname(dirname(realpathSync(bin)));
-    return existsSync(join(repo, "contrib", "guard")) ? repo : null;
-  } catch {
-    return null;
+  // varre o PATH à mão: vale o primeiro `ginga`, executável ou não, porque só
+  // interessa para onde ele aponta
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (!dir) continue;
+    try {
+      const bin = join(dir, "ginga");
+      if (!existsSync(bin)) continue;
+      const repo = dirname(dirname(realpathSync(bin)));
+      return existsSync(join(repo, "contrib", "guard")) ? repo : null;
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 /**
