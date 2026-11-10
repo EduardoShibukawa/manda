@@ -156,13 +156,36 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     }
   }
 
+  // T907: um red interrompido deixa `tasks/T<N>/PLAN.md` no disco sem
+  // `pinga_task` na TASK. Rodar de novo retoma o mesmo id (casado pelo goal)
+  // em vez de alocar outro.
+  const idMap = new Map<string, string>();
+  const reused = new Set<string>();
+  const goalOf = (dir: string): string => {
+    try {
+      const g = parseFrontmatter(readFileSync(join(tasksDir, dir, "PLAN.md"), "utf8")).goal;
+      return typeof g === "string" ? g : "";
+    } catch {
+      return "";
+    }
+  };
+  const materialized = existsSync(tasksDir) ? readdirSync(tasksDir).filter((d) => /^T\d+$/.test(d)) : [];
+  for (const t of tasks) {
+    const fm = t as Record<string, unknown>;
+    if (fm.pinga_task || typeof fm.goal !== "string" || !fm.goal) continue;
+    const hit = materialized.find((d) => !reused.has(d) && goalOf(d) === fm.goal);
+    if (hit) {
+      idMap.set(String(fm.task), hit);
+      reused.add(hit);
+    }
+  }
+
   // allocate ids for tasks without pinga_task
   const toAllocate = tasks.filter((t) => {
     const fm = t as Record<string, unknown>;
-    return !fm.pinga_task;
+    return !fm.pinga_task && !idMap.has(String(fm.task));
   });
   const ids = allocTaskIds(taken, toAllocate.length);
-  const idMap = new Map<string, string>();
   for (let i = 0; i < toAllocate.length; i++) {
     idMap.set((toAllocate[i] as any).task, ids[i]);
   }
@@ -211,9 +234,19 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     const taskPlanContent = `---\nmode: ${fm.mode || fmTask.mode}\ngoal: ${JSON.stringify(fm.goal || fmTask.goal)}\ndone_when: ${JSON.stringify(doneWhen)}\ntouch: ${JSON.stringify(fm.touch || fmTask.touch || [])}\ntests_frozen: ${JSON.stringify(testsFrozen)}\n---\n`;
     writeFileSync(join(taskPlanDir, "PLAN.md"), taskPlanContent);
 
+    // T907: o `pinga prove-red` acha a base pelo commit `test(T<N>): RED`,
+    // então o contrato e o teste congelado são comitados ANTES de provar.
+    git(["add", "."], worktree);
+    let committedRed = false;
+    if (git(["status", "--porcelain"], worktree).stdout.trim()) {
+      committedRed = git(["commit", "-m", `test(${pingaTask}): RED`], worktree).code === 0;
+    }
+
     // run pinga prove-red
     const proveRes = pinga(["prove-red", join("tasks", pingaTask, "PLAN.md")], worktree);
     if (proveRes.stdout && proveRes.stdout.includes("test_passed_on_base")) {
+      // não é RED: o commit feito para provar sai da branch (os arquivos ficam)
+      if (committedRed) git(["reset", "-q", "--mixed", "HEAD~1"], worktree);
       // mark as blocked
       const updatedFm = { ...fm, pinga_task: pingaTask, status: "blocked", reason: "test_passed_on_base" };
       // write back to plan task file
@@ -225,10 +258,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
       throw new Error(`pinga prove-red failed for ${pingaTask}: ${proveRes.stdout}`);
     }
 
-    // red is true - commit
-    // stage all changes in worktree
-    git(["add", "."], worktree);
-    git(["commit", "-m", `test(${pingaTask}): RED`], worktree);
+    // red is true (o commit `test(T<N>): RED` já foi feito antes do prove-red)
 
     // update plan task file with pinga_task
     const updatedFm2 = { ...fm, pinga_task: pingaTask };
