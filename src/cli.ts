@@ -56,6 +56,16 @@ export function run(args: string[]): number {
     return 0;
   }
 
+  if (command === "next") {
+    // `run` é síncrono: a leitura do stdin fica num filho, como no `manda run`
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "next.ts")], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return child.exitCode ?? 1;
+  }
+
   if (command === "breaker") {
     return breakerMain(rest);
   }
