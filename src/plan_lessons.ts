@@ -5,6 +5,7 @@
 // para dar o mesmo resultado nos dois modos. Sem importar código do ginga.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { projectCommand, runProjectCommand } from "./project";
 import { join } from "node:path";
 
 export interface LessonRef {
@@ -77,17 +78,18 @@ function fallbackFind(root: string, touch: string[]): LessonRef[] {
   return result;
 }
 
+/** Padrão de `[commands].lessons` (T903). */
+export const DEFAULT_LESSONS = "ginga lessons find --touch {touch} --json";
+
 function gingaFind(root: string, touch: string[]): LessonRef[] | null {
-  let r;
+  const cmd = projectCommand(root, "lessons", DEFAULT_LESSONS);
+  if (cmd === null) return null; // "none": só a varredura dos arquivos
+  let r: { exitCode: number | null; stdout: { toString(): string } };
   try {
-    r = Bun.spawnSync(["ginga", "lessons", "find", "--touch", touch.join(","), "--json"], {
-      cwd: root,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env },
-    });
+    const out = runProjectCommand(cmd, { touch: touch.join(",") }, root);
+    r = { exitCode: out.code, stdout: { toString: () => out.stdout } };
   } catch {
-    return null; // ginga não resolve no PATH
+    return null; // comando não resolve
   }
   if (r.exitCode !== 0) return null;
   try {

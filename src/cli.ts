@@ -11,6 +11,8 @@ import { breakerMain } from "./breaker_cli";
 import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
 import { redPlan } from "./red";
 import { checkPaidCall, extractTotalCostUsd } from "./cost_cap";
+import { projectCommand, runProjectCommand } from "./project";
+import { DEFAULT_LINT } from "./plan";
 
 export interface VersionJson {
   schema_version: number;
@@ -243,14 +245,11 @@ export function run(args: string[]): number {
     };
 
     const lint = (argv: string[], cwd: string): { code: number; stdout: string } => {
-      const result = Bun.spawnSync(["ginga", "lint", argv[1] ?? cwd, "--json"], {
-        cwd: root,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        env: process.env,
-      });
-      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+      // T903: `[commands].lint` (padrão `ginga lint {dir} --json`); "none" passa.
+      const cmd = projectCommand(root, "lint", DEFAULT_LINT);
+      if (cmd === null) return { code: 0, stdout: "" };
+      const result = runProjectCommand(cmd, { dir: argv[1] ?? cwd }, root);
+      return { code: result.code ?? 1, stdout: result.stdout };
     };
 
     const extractModel = (cmd: string[]): string | undefined => {
