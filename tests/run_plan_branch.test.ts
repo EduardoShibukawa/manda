@@ -134,8 +134,8 @@ describe("manda run na branch do PLAN", () => {
     expect(existsSync(join(ws, "src/a.ts"))).toBe(true);
   });
 
-  test("{pinga_task} do frontmatter da TASK chega ao [commands].verify", async () => {
-    setup({ toml: '[commands]\nverify = "test {pinga_task} = T7 && test -f src/a.ts"\n', pingaTask: "T7" });
+  test("{gate_id} (o pinga_task do frontmatter da TASK) chega ao [commands].verify", async () => {
+    setup({ toml: '[commands]\nverify = "test {gate_id} = T7 && test -f src/a.ts"\n', pingaTask: "T7" });
     planBranch();
     const rt = runtime((req) => put("src/a.ts", "export {};\n", req.worktree));
     const r = await runPlan(rt);

@@ -1,6 +1,6 @@
 ---
 mode: padrao
-goal: "manda run trabalha na branch do PLAN quando ela existe: a TASK parte de plan/NNNN e volta para ela, sem tocar a main; o gate ganha o placeholder {pinga_task}"
+goal: "manda run trabalha na branch do PLAN quando ela existe: a TASK parte de plan/NNNN e volta para ela, sem tocar a main; o gate ganha o placeholder {gate_id}"
 touch:
   - src/run.ts
   - src/worktree.ts
@@ -16,4 +16,4 @@ done_when: "bun test tests/run_plan_branch.test.ts tests/run.test.ts tests/workt
 - Com worktree de `plan/NNNN` no repo da TASK (criada pelo `manda red`), a TASK
   nasce dessa branch e o resultado é mergeado nela; a main só anda pelo `manda merge`.
 - Sem branch do PLAN, vale o comportamento antigo.
-- `{pinga_task}` em `[commands].verify` vem do frontmatter da TASK.
+- `{gate_id}` em `[commands].verify` é o `pinga_task` do frontmatter da TASK (gate.ts não cita o pinga).
