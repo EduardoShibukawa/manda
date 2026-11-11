@@ -275,7 +275,7 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
     writeFileSync(join(tmp, "metrics.json"), JSON.stringify(metrics));
 
     const prompt =
-      "Judge the plan using only the files in the current directory (SPEC.md if present, PLAN.md, diff.patch, receipts.json, metrics.json). Return only JSON {\"verdict\":\"pass\"|\"fail\",\"findings\":string[]}.";
+      "Judge the plan using only the files in the current directory (SPEC.md if present, PLAN.md, diff.patch, receipts.json, metrics.json). Read them with your file reading tool; do not run shell commands. Return only JSON {\"verdict\":\"pass\"|\"fail\",\"findings\":string[]}.";
 
     const nextEstimateUsd = typeof opts.nextEstimateUsd === "number" ? opts.nextEstimateUsd : 0.15;
     const since = opts.since ?? firstAttemptAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
