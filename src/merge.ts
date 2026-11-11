@@ -220,7 +220,10 @@ export function runMerge(opts: MergeOptions): MergeResult {
   if (gitOut(["rev-parse", "--abbrev-ref", "HEAD"]) !== "main") {
     return finish(2, `${repoName} nao esta na main`);
   }
-  if (git(["status", "--porcelain", "--untracked-files=no"]).stdout.toString().trim()) {
+  // T914: o bundle `.ginga/` é estado do condutor (o red anota `pinga_task` na
+  // TASK, o tick grava o log). Num repo único ele vive dentro do trunk e não
+  // conta como mudança pendente do código.
+  if (git(["status", "--porcelain", "--untracked-files=no", "--", ".", ":(exclude).ginga"]).stdout.toString().trim()) {
     return finish(2, "main com mudancas nao commitadas");
   }
 

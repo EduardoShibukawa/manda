@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { allocTaskIds } from "./alloc";
 import { loadBundle } from "./bundle";
 
@@ -95,11 +95,19 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
 
   // load bundle of tasks and filter by repo
   const bundle = loadBundle(planDir);
-  const tasks = bundle.tasks.filter((t) => (t as Record<string, unknown>).repo === repo);
+  // T914: workspace de repo único — a raiz É o repo (`.ginga/` dentro dele) e
+  // as TASKs não trazem `repo:`. Elas pertencem ao repo da raiz.
+  const rootRepo = repo === basename(root) && !existsSync(join(root, repo));
+  const tasks = bundle.tasks.filter((t) => {
+    const r = (t as Record<string, unknown>).repo;
+    const named = typeof r === "string" && r.trim() !== "";
+    return named ? r === repo : rootRepo;
+  });
 
   // determine worktree (needed before building taken to scan tasks/T*)
   const planSuffix = plan.match(/PLAN-(\d{4})/)?.[1] || plan;
-  const worktree = join(root, `${repo}-plan-${planSuffix}`);
+  // no repo único a worktree fica em `.worktrees/` (ignorada pelo projeto), não solta na raiz
+  const worktree = rootRepo ? join(root, ".worktrees", `plan-${planSuffix}`) : join(root, `${repo}-plan-${planSuffix}`);
 
   // create worktree from main BEFORE building taken, so the scan of tasks/T*
   // finds existing ids on first execution (worktree is created from main,
@@ -211,7 +219,8 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   }
 
   // copy frozen files from planDir/frozen/<repo> to worktree
-  const frozenSrc = join(planDir, "frozen", repo);
+  // no repo único o PLAN não precisa repetir o nome da pasta: vale `frozen/` direto
+  const frozenSrc = rootRepo && !existsSync(join(planDir, "frozen", repo)) ? join(planDir, "frozen") : join(planDir, "frozen", repo);
 
   // validate individually each tests_frozen before materializing
   for (const task of tasks) {
