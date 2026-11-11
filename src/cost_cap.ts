@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { projectCommand, runProjectCommand } from "./project";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -112,21 +113,31 @@ export interface CheckPaidCallOptions {
   costCmd?: string[];
 }
 
+/** Padrão de `[commands].cost` (T903). */
+export const DEFAULT_COST = "ginga cost --json";
+
 export function checkPaidCall(o: CheckPaidCallOptions): CapResult {
   if (!isPaidModel(o.model)) {
     return { allow: true, reason: "modelo free" };
   }
 
   const cap = loadRoundCapUsd(o.root);
-  const cmd = o.costCmd ?? ["ginga", "cost", "--json"];
+  // costCmd explícito (testes/CLI) vence; senão `[commands].cost` (T903),
+  // padrão `ginga cost --json`; "none" pula direto para a soma local.
+  const configured = o.costCmd ? null : projectCommand(o.root, "cost", DEFAULT_COST);
 
   let spent_usd = 0;
   try {
-    const proc = Bun.spawnSync(cmd, {
-      cwd: o.root,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    if (!o.costCmd && configured === null) throw new Error("cost desligado");
+    const proc = o.costCmd
+      ? (() => {
+          const p = Bun.spawnSync(o.costCmd!, { cwd: o.root, stdout: "pipe", stderr: "pipe" });
+          return { exitCode: p.exitCode, stdout: p.stdout.toString() };
+        })()
+      : (() => {
+          const p = runProjectCommand(configured!, {}, o.root);
+          return { exitCode: p.code, stdout: p.stdout };
+        })();
     if (proc.exitCode === 0) {
       const out = proc.stdout.toString();
       try {

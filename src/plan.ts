@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { basename, extname, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { loadProject } from "./project";
+import { loadProject, projectCommand, runProjectCommand } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import type { RuntimeAdapter } from "./runtime/port";
 import { topoSort } from "./bundle";
@@ -197,10 +197,18 @@ function isBlockingLintError(e: GingaLintError): boolean {
   return e.field === "frontmatter" || message === "obrigatório" || message.startsWith("inválido:");
 }
 
-function runGingaLint(stagingDir: string): { ok: boolean; output: string } {
+/** Padrão de `[commands].lint` (T903). */
+export const DEFAULT_LINT = "ginga lint {dir} --json";
+
+/** Lint do staging por `[commands].lint`; "none" ou comando ausente passam. */
+export function runLint(root: string, stagingDir: string): { ok: boolean; output: string } {
   try {
-    const r = Bun.spawnSync(["ginga", "lint", stagingDir, "--json"], { stdout: "pipe", stderr: "pipe", env: { ...process.env } });
-    if (r.exitCode === null || r.exitCode === 0) return { ok: true, output: "" };
+    const cmd = projectCommand(root, "lint", DEFAULT_LINT);
+    if (cmd === null) return { ok: true, output: "" };
+    const out = runProjectCommand(cmd, { dir: stagingDir }, root);
+    // 127 = o shell não achou o comando: equivale ao ginga fora do PATH
+    if (out.code === null || out.code === 0 || out.code === 127) return { ok: true, output: "" };
+    const r = { stdout: { toString: () => out.stdout }, stderr: { toString: () => out.stderr } };
     const stdout = r.stdout.toString();
     const raw = (stdout + (r.stderr.toString() ? "\n" + r.stderr.toString() : "")).trim();
     let parsed: unknown;
@@ -394,7 +402,7 @@ export async function planFromArtifact(
       for (const [n, b] of Object.entries(files)) {
         writeFileSync(join(staging, n), b);
       }
-      const lr = runGingaLint(staging);
+      const lr = runLint(root, staging);
       lintOk = lr.ok;
       lintOutput = lr.output;
       rmSync(staging, { recursive: true, force: true });

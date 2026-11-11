@@ -3,21 +3,57 @@
  * Previne `scope_drift` por `__pycache__` (PYTHONDONTWRITEBYTECODE=1) e
  * entrada acidental no stdin (SPAWN_STDIN="ignore").
  */
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 
 export const SPAWN_STDIN = "ignore" as const;
 
+/** Pasta que contém os repos irmãos (pai do checkout do manda). */
+const SIBLINGS = join(import.meta.dir, "..", "..", "..");
+
 /**
- * Checkout da main do `ginga`: irmão do repo manda (decisão 4 do revamp —
- * o manda só consome o ginga por caminho/CLI, nada é copiado).
+ * Checkout do ginga como pasta vizinha (T904): `ginga` (homelab) ou `g-inga`
+ * (clone do GitHub), a primeira que tiver `contrib/guard`. Nenhuma: `ginga`,
+ * e os adapters falham fechado (`guard_missing`).
  */
-export function defaultGuardDir(): string {
-  return join(import.meta.dir, "..", "..", "..", "ginga");
+export function siblingGuardDir(parent: string = SIBLINGS): string {
+  for (const name of ["ginga", "g-inga"]) {
+    if (existsSync(join(parent, name, "contrib", "guard"))) return join(parent, name);
+  }
+  return join(parent, "ginga");
 }
 
-/** `GUARD_DIR` do request ou o checkout da main do ginga (irmão do repo). */
+/** Raiz do checkout apontado pelo `ginga` do PATH (symlink para
+ * `<repo>/bin/ginga.ts`), se ela tiver `contrib/guard`. */
+function pathGuardDir(pathEnv: string | undefined): string | null {
+  // varre o PATH à mão: vale o primeiro `ginga`, executável ou não, porque só
+  // interessa para onde ele aponta
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (!dir) continue;
+    try {
+      const bin = join(dir, "ginga");
+      if (!existsSync(bin)) continue;
+      const repo = dirname(dirname(realpathSync(bin)));
+      return existsSync(join(repo, "contrib", "guard")) ? repo : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Checkout do ginga, dono do guard de segredos (decisão 4 do revamp — o manda
+ * só consome o ginga por caminho/CLI, nada é copiado). Sem depender do nome
+ * da pasta: `ginga` do PATH, depois a vizinha.
+ */
+export function defaultGuardDir(pathEnv: string | undefined = process.env.PATH): string {
+  return pathGuardDir(pathEnv) ?? siblingGuardDir();
+}
+
+/** `GUARD_DIR` do request, `GINGA_HOME`, ou o checkout achado pelo PATH/vizinha. */
 export function guardDir(env: Record<string, string | undefined>): string {
-  return env.GUARD_DIR ?? defaultGuardDir();
+  return env.GUARD_DIR ?? env.GINGA_HOME ?? defaultGuardDir("PATH" in env ? env.PATH : process.env.PATH);
 }
 
 /**

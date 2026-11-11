@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
+import { loadProject } from "./project";
 
 /**
  * `manda merge <PLAN> <repo> <branch>`: reproduz o gate determinístico de
@@ -10,11 +11,11 @@ import { basename, isAbsolute, join, relative } from "node:path";
  *      worktree e da branch (WIP sem commit vai antes para `<plan>/wip/*.patch`)
  *   2  branch sem worktree | main não está na main | mudanças não commitadas
  *   10 sem veredito (judge/<repo>.json) ou veredito de outro HEAD
- *   11 item do judge com regression=true
- *   12 TASK do diff main...HEAD sem receipt done no `pinga queue`
+ *   11 veredito fail do judge, ou item com regression=true
+ *   12 `[commands].gate` recusou as TASKs do diff main...HEAD (padrão: `pinga gate`)
  *   13 falha de teste nova na branch que a main não tem
  *   14 main ganhou falha depois do merge -> `git revert -m 1` automático
- *   15 merge feito, mas `pinga ledger verify` falhou (merge fica)
+ *   15 merge feito, mas `[commands].post_merge` falhou (padrão: `pinga ledger verify`; merge fica)
  *   16 o revert falhou (CRÍTICO)
  *   17 passe vazio: veredito sem nenhum item para o repo (judge.items ausente ou [])
  */
@@ -147,6 +148,36 @@ function cleanupAfterMerge(repo: string, wt: string, branch: string, plan: strin
   }
 }
 
+/** Padrões de `[commands]` do merge (T902): o manda não conhece o pinga, só
+ * carrega estes valores quando o projeto não configura os seus. */
+export const DEFAULT_GATE = "pinga gate --root {worktree} {tasks}";
+export const DEFAULT_POST_MERGE = "pinga ledger verify";
+
+/** `[commands]` do trunk e, se o trunk não tem project.toml, do bundle do PLAN
+ * (`<root>/.ginga/plans/<PLAN>`). A worktree nunca define o próprio gate. */
+function mergeCommands(repo: string, plan: string): { gate: string; postMerge: string } {
+  let commands: Record<string, string> = {};
+  for (const root of [repo, join(plan, "..", "..", "..")]) {
+    try {
+      if (!existsSync(join(root, ".ginga", "project.toml"))) continue;
+      commands = loadProject(root).commands;
+      break;
+    } catch {
+      // config ilegível: segue para a próxima raiz / padrões
+    }
+  }
+  const pick = (v: unknown, dflt: string) => (typeof v === "string" && v.trim() ? v.trim() : dflt);
+  return { gate: pick(commands.gate, DEFAULT_GATE), postMerge: pick(commands.post_merge, DEFAULT_POST_MERGE) };
+}
+
+/** Roda um comando de `[commands]` no shell. env por valor: filhos Bun não
+ * vêem mutações de process.env feitas após o boot (PATH do stub de teste). */
+function runCommand(command: string, vars: Record<string, string>, cwd: string): { code: number; stdout: string } {
+  const filled = command.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? vars[k]! : m));
+  const r = Bun.spawnSync(["/bin/sh", "-c", filled], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env } });
+  return { code: r.exitCode ?? 1, stdout: r.stdout.toString() };
+}
+
 export function runMerge(opts: MergeOptions): MergeResult {
   const plan = isAbsolute(opts.plan) ? opts.plan : join(process.cwd(), opts.plan);
   const repo = isAbsolute(opts.repo) ? opts.repo : join(process.cwd(), opts.repo);
@@ -215,33 +246,30 @@ export function runMerge(opts: MergeOptions): MergeResult {
   if (items.length === 0) {
     return finish(17, `veredito sem nenhum item para ${repoName} (passe vazio): falta TASK com repo: ${repoName} no PLAN`);
   }
+  // veredito fail nunca mergeia (T906): o judge cego grava o fail em disco e
+  // o condutor decide o replan; o gate só não deixa passar.
+  if (judge?.verdict === "fail") return finish(11, "veredito fail do judge");
   const regressions = items.filter((i) => !!(i as { regression?: unknown })?.regression).length;
   if (regressions > 0) return finish(11, `${regressions} item(ns) com regression=true`);
 
-  // --- 12: TASKs do diff main...HEAD com receipt done no pinga
-  const wanted = new Set(
-    [...gitOut(["diff", "--name-only", "main...HEAD"], wt).matchAll(/tasks\/(T\d+)\//g)].map((m) => m[1]!),
-  );
-  if (wanted.size > 0) {
-    // env explícito: filhos Bun não vêem mutações de process.env feitas após
-    // o boot (PATH do stub de teste), então o ambiente é passado por valor.
-    const q = Bun.spawnSync(["pinga", "queue", "--json", "--root", wt], { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...process.env } });
-    let queueTasks: unknown[] = [];
-    try {
-      const j: unknown = JSON.parse(q.stdout.toString());
-      if (j && typeof j === "object" && Array.isArray((j as { tasks?: unknown }).tasks)) {
-        queueTasks = (j as { tasks: unknown[] }).tasks;
-      }
-    } catch {}
-    // Uma TASK do diff que não apareça na fila do pinga (ou não esteja
-    // `done`) conta como pendente: ausência na fila == pendente (exit 12).
-    const stateByTask = new Map<string, unknown>();
-    for (const t of queueTasks) {
-      const e = t as { task?: unknown; state?: unknown };
-      if (typeof e.task === "string") stateByTask.set(e.task, e.state);
+  // --- 12: gate de receipts das TASKs do diff main...HEAD ([commands].gate)
+  const cmds = mergeCommands(repo, plan);
+  const vars = { worktree: wt, repo, plan };
+  const wanted = [
+    ...new Set([...gitOut(["diff", "--name-only", "main...HEAD"], wt).matchAll(/tasks\/(T\d+)\//g)].map((m) => m[1]!)),
+  ].sort((x, y) => Number(x.slice(1)) - Number(y.slice(1)));
+  if (wanted.length > 0 && cmds.gate !== "none") {
+    const g = runCommand(cmds.gate, { ...vars, tasks: wanted.join(" ") }, wt);
+    if (g.code !== 0) {
+      // gate que fala JSON ({pending:[...]}, como o `pinga gate`) nomeia as pendentes
+      let pending: string[] = [];
+      try {
+        const j: unknown = JSON.parse(g.stdout.trim().split("\n").pop() ?? "");
+        const p = (j as { pending?: unknown } | null)?.pending;
+        if (Array.isArray(p)) pending = p.filter((x): x is string => typeof x === "string");
+      } catch {}
+      return finish(12, pending.length > 0 ? `sem receipt done: ${pending.join(" ")}` : `gate recusou ${wanted.join(" ")} (exit ${g.code})`);
     }
-    const pending = [...wanted].filter((task) => stateByTask.get(task) !== "done");
-    if (pending.length > 0) return finish(12, `sem receipt done: ${pending.join(" ")}`);
   }
 
   // --- 13: falha de teste que a main não tem
@@ -285,9 +313,9 @@ export function runMerge(opts: MergeOptions): MergeResult {
     return finish(14, `main ganhou falha apos merge, revertido: ${extraMain}`);
   }
 
-  // --- 15: ledger tem que continuar íntegro com o merge já feito
-  if (Bun.spawnSync(["pinga", "ledger", "verify"], { cwd: repo, stdout: "pipe", stderr: "pipe", env: { ...process.env } }).exitCode !== 0) {
-    return finish(15, "merge feito, mas pinga ledger verify falhou");
+  // --- 15: pós-merge ([commands].post_merge): o ledger tem que continuar íntegro
+  if (cmds.postMerge !== "none" && runCommand(cmds.postMerge, vars, repo).code !== 0) {
+    return finish(15, `merge feito, mas o pos-merge falhou (${cmds.postMerge})`);
   }
 
   return finish(0, `mergeado ${gitOut(["rev-parse", "--short", "HEAD"])}`, true);

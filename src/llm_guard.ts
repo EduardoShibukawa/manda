@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 export interface LlmAgentCheck {
@@ -29,17 +29,34 @@ function readParentPid(procRoot: string, pid: number): number {
   return 0;
 }
 
+export type PsReader = (pid: number) => { ppid: number; command: string } | null;
+
+/** T912: um processo pelo `ps` (macOS não tem /proc). */
+const realPs: PsReader = (pid) => {
+  try {
+    const r = Bun.spawnSync(["ps", "-o", "ppid=,command=", "-p", String(pid)], { stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) return null;
+    const m = /^\s*(\d+)\s+(.*)$/.exec(r.stdout.toString().split("\n")[0] ?? "");
+    return m ? { ppid: Number(m[1]), command: m[2]!.trim() } : null;
+  } catch {
+    return null;
+  }
+};
+
 /**
  * Anda a cadeia de ancestrais a partir de startPid (inclusive) e recusa se
  * algum é um agente LLM: `*opencode* run`, `pi`, `claude -p`, `codex exec`
  * (mesma lógica de .ginga/bin/merge-gate.sh; `timeout` com flags/números é pulado).
  */
-export function findLlmAgent(startPid: number, procRoot = "/proc"): LlmAgentCheck {
+export function findLlmAgent(startPid: number, procRoot = "/proc", ps: PsReader = realPs): LlmAgentCheck {
   const seen = new Set<number>();
   let pid = startPid;
+  // T912: sem /proc (macOS) a cadeia vem do `ps`; a regra de recusa é a mesma.
+  const viaPs = !existsSync(procRoot);
   while (pid && pid > 1 && !seen.has(pid)) {
     seen.add(pid);
-    const cmd = readProcCmdline(procRoot, pid);
+    const node = viaPs ? ps(pid) : null;
+    const cmd = viaPs ? (node?.command ?? "").split(/\s+/).filter(Boolean) : readProcCmdline(procRoot, pid);
     if (cmd.length > 0) {
       let b0 = basename(cmd[0]);
       let i = 1;
@@ -60,7 +77,7 @@ export function findLlmAgent(startPid: number, procRoot = "/proc"): LlmAgentChec
         return { refused: true, pid, label: b0 };
       }
     }
-    pid = readParentPid(procRoot, pid);
+    pid = viaPs ? (node?.ppid ?? 0) : readParentPid(procRoot, pid);
   }
   return { refused: false };
 }

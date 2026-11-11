@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { routeMain } from "./routing";
 
-import { CycleError, loadBundle, resolvePlanDir } from "./bundle";
+import { CycleError, loadBundle, planBranchOf, planRepos, resolvePlanDir } from "./bundle";
+import { worktreeOfBranch } from "./worktree";
 import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
 import { installLink } from "./install";
@@ -11,6 +12,8 @@ import { breakerMain } from "./breaker_cli";
 import { buildReplanContext as buildReplanContextImported, replan } from "./replan";
 import { redPlan } from "./red";
 import { checkPaidCall, extractTotalCostUsd } from "./cost_cap";
+import { gateCli, projectCommand, runProjectCommand } from "./project";
+import { DEFAULT_LINT } from "./plan";
 
 export interface VersionJson {
   schema_version: number;
@@ -53,6 +56,16 @@ export function run(args: string[]): number {
     return 0;
   }
 
+  if (command === "next") {
+    // `run` é síncrono: a leitura do stdin fica num filho, como no `manda run`
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "next.ts")], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return child.exitCode ?? 1;
+  }
+
   if (command === "breaker") {
     return breakerMain(rest);
   }
@@ -67,10 +80,40 @@ export function run(args: string[]): number {
   }
 
   if (command === "merge") {
-    const positional = rest.filter((a) => !a.startsWith("--"));
+    // `--root <dir>` é flag com valor; o resto que não começa com `--` é posicional
+    const positional: string[] = [];
+    let rootArg: string | undefined;
+    for (let i = 0; i < rest.length; i += 1) {
+      const a = rest[i]!;
+      if (a === "--root") {
+        rootArg = rest[i + 1];
+        i += 1;
+      } else if (a.startsWith("--root=")) rootArg = a.slice("--root=".length);
+      else if (!a.startsWith("--")) positional.push(a);
+    }
     const [planArg, repoArg, branchArg] = positional;
+    if (planArg && !repoArg && !branchArg) {
+      // T906: só o PLAN → mergeia `plan/NNNN` em cada repo do PLAN que a tenha
+      const root = rootArg ?? process.cwd();
+      const dir = resolvePlanDir(planArg, { root });
+      const branch = dir ? planBranchOf(dir) : null;
+      if (!dir || !branch) {
+        console.error(`plan não encontrado ou sem número: ${planArg}`);
+        return 2;
+      }
+      const targets = planRepos(dir, root).filter((r) => worktreeOfBranch(r.path, branch));
+      if (targets.length === 0) {
+        console.error(`nenhum repo de ${planArg} tem worktree de ${branch}`);
+        return 2;
+      }
+      for (const t of targets) {
+        const code = runMerge({ plan: dir, repo: t.path, branch, repoName: t.name }).exitCode;
+        if (code !== 0) return code;
+      }
+      return 0;
+    }
     if (!planArg || !repoArg || !branchArg) {
-      console.error("Usage: manda merge <PLAN> <repo> <branch> [--json]");
+      console.error("Usage: manda merge <PLAN> [<repo> <branch>] [--root <dir>] [--json]");
       return 2;
     }
     return runMerge({ plan: planArg, repo: repoArg, branch: branchArg }).exitCode;
@@ -152,7 +195,7 @@ export function run(args: string[]): number {
     const promptText = existsSync(promptPath) ? readFileSync(promptPath, "utf8") : "";
 
     const receipts: string[] = [];
-    const queueRes = Bun.spawnSync(["pinga", "queue", "--json"], {
+    const queueRes = Bun.spawnSync([...gateCli(root), "queue", "--json"], {
       cwd: root,
       stdin: "ignore",
       stdout: "pipe",
@@ -243,14 +286,11 @@ export function run(args: string[]): number {
     };
 
     const lint = (argv: string[], cwd: string): { code: number; stdout: string } => {
-      const result = Bun.spawnSync(["ginga", "lint", argv[1] ?? cwd, "--json"], {
-        cwd: root,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        env: process.env,
-      });
-      return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+      // T903: `[commands].lint` (padrão `ginga lint {dir} --json`); "none" passa.
+      const cmd = projectCommand(root, "lint", DEFAULT_LINT);
+      if (cmd === null) return { code: 0, stdout: "" };
+      const result = runProjectCommand(cmd, { dir: argv[1] ?? cwd }, root);
+      return { code: result.code ?? 1, stdout: result.stdout };
     };
 
     const extractModel = (cmd: string[]): string | undefined => {
@@ -342,13 +382,9 @@ export function run(args: string[]): number {
         continue;
       }
     }
-    if (!repoArg) {
-      console.error("Usage: manda red <PLAN> --repo <repo> [--root <dir>]");
-      return 2;
-    }
     const root = rootArg ? rootArg : process.cwd();
     const pinga = (argv: string[], cwd: string): { code: number; stdout: string } => {
-      const result = Bun.spawnSync(["pinga", ...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
+      const result = Bun.spawnSync([...gateCli(root), ...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
       return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
     };
     const git = (argv: string[], cwd: string): { code: number; stdout: string } => {
@@ -356,8 +392,21 @@ export function run(args: string[]): number {
       return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
     };
     try {
-      const res = redPlan({ root, plan: planArg, repo: repoArg, pinga, git });
-      console.log(JSON.stringify(res));
+      // T906: sem --repo, o RED roda em cada repo do PLAN (campo `repo` das TASKs)
+      // e o PLAN pode vir abreviado (`PLAN-0001`): vale o nome do dir no bundle
+      const dir = resolvePlanDir(planArg, { root });
+      const planName = dir ? dir.slice(dir.lastIndexOf("/") + 1) : planArg;
+      let repos = repoArg ? [repoArg] : [];
+      if (repos.length === 0) {
+        if (!dir) {
+          console.error(`plan não encontrado: ${planArg}`);
+          return 2;
+        }
+        repos = planRepos(dir, root).map((r) => r.name);
+      }
+      const tasks: unknown[] = [];
+      for (const repo of repos) tasks.push(...redPlan({ root, plan: planName, repo, pinga, git }).tasks);
+      console.log(JSON.stringify({ tasks }));
       return 0;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

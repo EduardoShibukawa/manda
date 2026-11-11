@@ -57,11 +57,23 @@ export function parseAgyOutput(stdout: string): {
       usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.reasoningTokens;
   }
 
-  const isError = parsed.status !== "SUCCESS" || Boolean(parsed.error);
+  const resultText = typeof parsed.response === "string" ? parsed.response.trim() : "";
+  // T913: em modo sem tela o agy nega o que pediria permissão e pode devolver
+  // `SUCCESS` com resposta vazia. Sem resposta, ação negada é falha.
+  const denied = Array.isArray(parsed.denied_actions)
+    ? parsed.denied_actions.map((d: any) => String(d?.display_name ?? d?.action ?? "?"))
+    : [];
+  const deniedEmpty = resultText === "" && denied.length > 0;
+  const isError = parsed.status !== "SUCCESS" || Boolean(parsed.error) || deniedEmpty;
   return {
-    resultText: typeof parsed.response === "string" ? parsed.response.trim() : "",
+    resultText,
     isError,
-    error: typeof parsed.error === "string" && parsed.error ? parsed.error : undefined,
+    error:
+      typeof parsed.error === "string" && parsed.error
+        ? parsed.error
+        : deniedEmpty
+          ? `resposta vazia: ação negada no modo sem tela (${denied.join(", ")})`
+          : undefined,
     durationMs:
       typeof parsed.duration_seconds === "number" ? Math.round(parsed.duration_seconds * 1000) : undefined,
     usage: usage.totalTokens > 0 ? usage : undefined,

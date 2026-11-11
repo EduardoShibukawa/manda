@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, isAbsolute, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 
 export interface TaskDoc extends Record<string, unknown> {
   task: string;
@@ -113,3 +113,23 @@ function parseFrontmatter(text: string): Record<string, unknown> {
   return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
 }
 
+
+/** Branch do PLAN (`plan/NNNN`) a partir do nome do dir/ID, ou null. */
+export function planBranchOf(plan: string): string | null {
+  const n = basename(plan).match(/PLAN-(\d{4})/)?.[1];
+  return n ? `plan/${n}` : null;
+}
+
+/**
+ * Repos de um PLAN (T906): os `repo:` distintos das TASKs, como subpastas da
+ * raiz do workspace. PLAN sem `repo:` em nenhuma TASK vale a própria raiz.
+ */
+export function planRepos(dir: string, root: string): { name: string; path: string }[] {
+  const names: string[] = [];
+  for (const t of loadBundle(dir).tasks) {
+    const r = typeof (t as Record<string, unknown>).repo === "string" ? String((t as Record<string, unknown>).repo).trim() : "";
+    if (r && !names.includes(r)) names.push(r);
+  }
+  if (names.length === 0) return [{ name: basename(root), path: root }];
+  return names.map((name) => ({ name: isAbsolute(name) ? basename(name) : name, path: isAbsolute(name) ? name : join(root, name) }));
+}
