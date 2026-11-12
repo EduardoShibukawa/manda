@@ -107,7 +107,17 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   // determine worktree (needed before building taken to scan tasks/T*)
   const planSuffix = plan.match(/PLAN-(\d{4})/)?.[1] || plan;
   // no repo único a worktree fica em `.worktrees/` (ignorada pelo projeto), não solta na raiz
-  const worktree = rootRepo ? join(root, ".worktrees", `plan-${planSuffix}`) : join(root, `${repo}-plan-${planSuffix}`);
+  // T916 (monorepo): `repo:` nomeia um pacote — uma pasta dentro de um repositório
+  // maior. O PLAN usa uma worktree só, do repositório inteiro, e o pacote é uma pasta dela.
+  const repoPath = join(root, repo);
+  const pkg = existsSync(repoPath) ? git(["rev-parse", "--show-prefix"], repoPath).stdout.trim().replace(/\/+$/, "") : "";
+  const gitRoot = pkg !== "" ? git(["rev-parse", "--show-toplevel"], repoPath).stdout.trim() : "";
+  const worktree =
+    pkg !== "" && gitRoot !== ""
+      ? join(gitRoot, ".worktrees", `plan-${planSuffix}`)
+      : rootRepo
+        ? join(root, ".worktrees", `plan-${planSuffix}`)
+        : join(root, `${repo}-plan-${planSuffix}`);
 
   // create worktree from main BEFORE building taken, so the scan of tasks/T*
   // finds existing ids on first execution (worktree is created from main,
@@ -118,7 +128,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   if (!existsSync(worktree)) {
     // ensure repo exists as git repo? test sets up repo under root/manda and also creates worktree under root/manda-plan-0042
     // try to create worktree from root's main or from repo's main
-    const res = git(["worktree", "add", "-b", branch, worktree, "main"], root);
+    const res = git(["worktree", "add", "-b", branch, worktree, "main"], gitRoot !== "" ? gitRoot : root);
     if (res.code !== 0) {
       // try in repo dir
       const repoPath = join(root, repo);
@@ -132,6 +142,10 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
       }
     }
   }
+
+  // onde o pacote vive dentro da worktree (a própria worktree fora de monorepo)
+  const workdir = pkg !== "" && gitRoot !== "" ? join(worktree, pkg) : worktree;
+  ensureDir(workdir);
 
   // get taken pinga_task ids from queue if possible
   const taken: string[] = [];
@@ -173,9 +187,9 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
   } catch {
     // sem bundle legível: valem as outras fontes
   }
-  // also include ids from existing tasks/T*/ directories in the worktree
-  // (worktree now exists — created from main above — so this scans on first execution too)
-  const tasksDir = join(worktree, "tasks");
+  // also include ids from existing tasks/T*/ directories in the workdir
+  // (workdir now exists — created from main above — so this scans on first execution too)
+  const tasksDir = join(workdir, "tasks");
   if (existsSync(tasksDir)) {
     for (const dir of readdirSync(tasksDir)) {
       if (/^T\d+$/.test(dir)) {
@@ -218,7 +232,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     idMap.set((toAllocate[i] as any).task, ids[i]);
   }
 
-  // copy frozen files from planDir/frozen/<repo> to worktree
+  // copy frozen files from planDir/frozen/<repo> to workdir
   // no repo único o PLAN não precisa repetir o nome da pasta: vale `frozen/` direto
   const frozenSrc = rootRepo && !existsSync(join(planDir, "frozen", repo)) ? join(planDir, "frozen") : join(planDir, "frozen", repo);
 
@@ -234,7 +248,7 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     }
   }
 
-  copyRecursive(frozenSrc, worktree);
+  copyRecursive(frozenSrc, workdir);
 
   const results: RedTaskResult[] = [];
 
@@ -257,25 +271,25 @@ export function redPlan(options: RedPlanOptions): { tasks: RedTaskResult[] } {
     // find first test file in frozen to check? or just use done_when
     const doneWhen = (fm.done_when as string) || (fmTask.done_when as string) || "";
 
-    // create tasks/T<N>/PLAN.md in worktree
-    const taskPlanDir = join(worktree, "tasks", pingaTask);
+    // create tasks/T<N>/PLAN.md in workdir
+    const taskPlanDir = join(workdir, "tasks", pingaTask);
     ensureDir(taskPlanDir);
     const taskPlanContent = `---\nmode: ${fm.mode || fmTask.mode}\ngoal: ${JSON.stringify(fm.goal || fmTask.goal)}\ndone_when: ${JSON.stringify(doneWhen)}\ntouch: ${JSON.stringify(fm.touch || fmTask.touch || [])}\ntests_frozen: ${JSON.stringify(testsFrozen)}\n---\n`;
     writeFileSync(join(taskPlanDir, "PLAN.md"), taskPlanContent);
 
     // T907: o `pinga prove-red` acha a base pelo commit `test(T<N>): RED`,
     // então o contrato e o teste congelado são comitados ANTES de provar.
-    git(["add", "."], worktree);
+    git(["add", "."], workdir);
     let committedRed = false;
-    if (git(["status", "--porcelain"], worktree).stdout.trim()) {
-      committedRed = git(["commit", "-m", `test(${pingaTask}): RED`], worktree).code === 0;
+    if (git(["status", "--porcelain"], workdir).stdout.trim()) {
+      committedRed = git(["commit", "-m", `test(${pingaTask}): RED`], workdir).code === 0;
     }
 
     // run pinga prove-red
-    const proveRes = pinga(["prove-red", join("tasks", pingaTask, "PLAN.md")], worktree);
+    const proveRes = pinga(["prove-red", join("tasks", pingaTask, "PLAN.md"), "--root", workdir], workdir);
     if (proveRes.stdout && proveRes.stdout.includes("test_passed_on_base")) {
       // não é RED: o commit feito para provar sai da branch (os arquivos ficam)
-      if (committedRed) git(["reset", "-q", "--mixed", "HEAD~1"], worktree);
+      if (committedRed) git(["reset", "-q", "--mixed", "HEAD~1"], workdir);
       // mark as blocked
       const updatedFm = { ...fm, pinga_task: pingaTask, status: "blocked", reason: "test_passed_on_base" };
       // write back to plan task file

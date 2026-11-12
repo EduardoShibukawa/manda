@@ -48,24 +48,29 @@ function normalize(path: string): string {
 function statusPaths(worktree: string): string[] {
   // -uall: sem ele, pastas inteiras não rastreadas colapsam em `dir/` e escapam
   // do match exato contra `tests_frozen`.
-  const out = git(["-C", worktree, "status", "--porcelain", "-uall"], worktree).stdout;
+  // T916: num pacote de monorepo o status vem relativo à raiz do repositório;
+  // aqui só interessam os arquivos do pacote, com caminho relativo a ele.
+  const prefix = git(["-C", worktree, "rev-parse", "--show-prefix"], worktree).stdout.trim();
+  const out = git(["-C", worktree, "status", "--porcelain", "-uall", "--", "."], worktree).stdout;
   const paths: string[] = [];
   for (const line of out.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const raw = line.slice(3).trim();
     if (!raw) continue;
     const target = raw.includes(" -> ") ? raw.split(" -> ").pop()! : raw;
-    paths.push(normalize(target.replace(/^"(.*)"$/, "$1")));
+    const clean = normalize(target.replace(/^"(.*)"$/, "$1"));
+    if (prefix !== "" && !clean.startsWith(prefix)) continue;
+    paths.push(prefix !== "" ? clean.slice(prefix.length) : clean);
   }
   return paths;
 }
 
 function committedPaths(worktree: string, base: string): string[] {
-  const diff = git(["-C", worktree, "diff", "--name-only", `${base}...HEAD`], worktree);
+  const diff = git(["-C", worktree, "diff", "--name-only", "--relative", `${base}...HEAD`], worktree);
   const out =
     diff.code === 0
       ? diff.stdout
-      : git(["-C", worktree, "diff", "--name-only", base, "HEAD"], worktree).stdout;
+      : git(["-C", worktree, "diff", "--name-only", "--relative", base, "HEAD"], worktree).stdout;
   return out
     .split(/\r?\n/)
     .map((l) => l.trim())

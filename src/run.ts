@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
 import { openStateDb, planNextAfterFailure, watchAttempt } from "./attempt_watch";
@@ -17,7 +17,7 @@ import { resolveRuntime as defaultResolveRuntime } from "./runtime";
 import { runtimeEnv } from "./runtime/env";
 import { defaultSpawn, type FailureKind, type RunRequest, type RunResult, type RuntimeAdapter } from "./runtime/port";
 import type { RunObs } from "./run_state";
-import { createWorktree, mergeWorktreeInto, mergeWorktreeToTrunk, removeWorktree, worktreeOfBranch } from "./worktree";
+import { createWorktree, git as gitCmd, mergeWorktreeInto, mergeWorktreeToTrunk, removeWorktree, worktreeOfBranch } from "./worktree";
 import { checkPaidCall } from "./cost_cap";
 
 /**
@@ -290,7 +290,13 @@ export function realWatchHooks(o: {
 async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   const fullId = String(task.task);
   const eventTask = shortTaskId(fullId);
-  const repoRoot = repoOf(task, ctx.root);
+  // T916 (monorepo): `repo:` pode nomear um pacote — pasta de um repositório
+  // maior. As worktrees são do repositório; o executor e o gate trabalham na
+  // pasta do pacote dentro delas.
+  const repoDir = repoOf(task, ctx.root);
+  const pkg = existsSync(repoDir) ? gitCmd(["-C", repoDir, "rev-parse", "--show-prefix"], repoDir).stdout.trim().replace(/\/+$/, "") : "";
+  const top = pkg !== "" ? gitCmd(["-C", repoDir, "rev-parse", "--show-toplevel"], repoDir).stdout.trim() : "";
+  const repoRoot = pkg !== "" && top !== "" ? top : repoDir;
   const tier = stringField(task, "tier");
   const fixed = hasFixedRuntime(ctx.root, tier);
   const escalation = fixed ? null : loadEscalation(ctx.root);
@@ -321,6 +327,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
   // falhou ou foi interrompida sai antes de criar a nova.
   await removeWorktree(repoRoot, worktreeId);
   const worktree = await createWorktree(repoRoot, worktreeId, baseBranch);
+  const workdir = pkg !== "" && top !== "" ? join(worktree.path, pkg) : worktree.path;
 
   type AttemptSpec = { tier: string; entry: string; provider: string; model: string; runtime: string };
   let builtSpecs: AttemptSpec[] = [];
@@ -473,11 +480,11 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
       process.env.GINGA_GUARD_LANE ?? `${ctx.plan}/${shortTaskId(fullId)}`.toLowerCase();
 
     const request: RunRequest = {
-      worktree: worktree.path,
+      worktree: workdir,
       prompt: formatTaskPrompt(task, {
         plan: ctx.plan,
         repo: repoRoot,
-        worktree: worktree.path,
+        worktree: workdir,
       }),
       role: "executor",
       logPath: join(ctx.root, "runs", ctx.plan, `${eventTask}-attempt-${attemptNo}.log`),
@@ -538,7 +545,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
     const hooks: WatchHooks = ctx.watch ??
       realWatchHooks({
         root: ctx.root,
-        worktree: worktree.path,
+        worktree: workdir,
         cfg: watchCfg(ctx.root),
         startedAt: started,
         pidReady,
@@ -617,7 +624,7 @@ async function runTask(task: TaskDoc, ctx: TaskContext): Promise<TaskOutcome> {
           task: `${ctx.plan}/${eventTask}`,
           plan: ctx.plan,
           repo: repoRoot,
-          worktree: worktree.path,
+          worktree: workdir,
           doneWhen: stringField(task, "done_when"),
           base: baseBranch,
           testsFrozen: listField(task, "tests_frozen"),
