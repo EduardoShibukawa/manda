@@ -95,6 +95,19 @@ function testFails(dir: string): string[] {
 }
 
 /**
+ * T915: falhas da suíte. Num monorepo roda `bun test` em cada pacote tocado, na
+ * pasta dele, e a linha carrega o pacote — o mesmo nome de teste em dois
+ * pacotes não se confunde. Sem pacotes, é a suíte da raiz, como sempre.
+ */
+function suiteFails(dir: string, packages: string[]): string[] {
+  if (packages.length === 0) return testFails(dir);
+  return packages
+    .filter((pkg) => existsSync(join(dir, pkg)))
+    .flatMap((pkg) => testFails(join(dir, pkg)).map((l) => l.replace(/^\(fail\) /, `(fail) [${pkg}] `)))
+    .sort();
+}
+
+/**
  * Limpeza pós-merge (só no caminho do exit 0): arquiva WIP sem commit da
  * worktree como patch no PLAN, remove a worktree e apaga a branch (`-d`,
  * nunca `-D`). Qualquer falha é só aviso em stderr: exit 0 e merged=true
@@ -258,12 +271,28 @@ export function runMerge(opts: MergeOptions): MergeResult {
   // --- 12: gate de receipts das TASKs do diff main...HEAD ([commands].gate)
   const cmds = mergeCommands(repo, plan);
   const vars = { worktree: wt, repo, plan };
-  const wanted = [
-    ...new Set([...gitOut(["diff", "--name-only", "main...HEAD"], wt).matchAll(/tasks\/(T\d+)\//g)].map((m) => m[1]!)),
-  ].sort((x, y) => Number(x.slice(1)) - Number(y.slice(1)));
-  if (wanted.length > 0 && cmds.gate !== "none") {
-    const g = runCommand(cmds.gate, { ...vars, tasks: wanted.join(" ") }, wt);
-    if (g.code !== 0) {
+  const changed = gitOut(["diff", "--name-only", "main...HEAD"], wt).split("\n").filter((f) => f.length > 0);
+  // T915 (monorepo): a raiz do repositório não tem package.json e o trabalho
+  // está em pastas que têm. Receipts e suíte passam a ser por pacote.
+  const monorepo = !existsSync(join(wt, "package.json"));
+  const packages = monorepo
+    ? [...new Set(changed.map((f) => f.split("/")[0]!))].filter((seg) => existsSync(join(wt, seg, "package.json"))).sort()
+    : [];
+  const byPackage = new Map<string, string[]>();
+  for (const f of changed) {
+    const m = /^(?:(.+?)\/)?tasks\/(T\d+)\//.exec(f);
+    if (!m) continue;
+    const pkg = monorepo ? (m[1] ?? "") : "";
+    const list = byPackage.get(pkg) ?? [];
+    if (!list.includes(m[2]!)) list.push(m[2]!);
+    byPackage.set(pkg, list);
+  }
+  if (cmds.gate !== "none") {
+    for (const pkg of [...byPackage.keys()].sort()) {
+      const wanted = byPackage.get(pkg)!.sort((x, y) => Number(x.slice(1)) - Number(y.slice(1)));
+      const pkgDir = pkg === "" ? wt : join(wt, pkg);
+      const g = runCommand(cmds.gate, { ...vars, worktree: pkgDir, tasks: wanted.join(" ") }, pkgDir);
+      if (g.code === 0) continue;
       // gate que fala JSON ({pending:[...]}, como o `pinga gate`) nomeia as pendentes
       let pending: string[] = [];
       try {
@@ -271,13 +300,14 @@ export function runMerge(opts: MergeOptions): MergeResult {
         const p = (j as { pending?: unknown } | null)?.pending;
         if (Array.isArray(p)) pending = p.filter((x): x is string => typeof x === "string");
       } catch {}
-      return finish(12, pending.length > 0 ? `sem receipt done: ${pending.join(" ")}` : `gate recusou ${wanted.join(" ")} (exit ${g.code})`);
+      const where = pkg === "" ? "" : ` em ${pkg}`;
+      return finish(12, pending.length > 0 ? `sem receipt done${where}: ${pending.join(" ")}` : `gate recusou${where} ${wanted.join(" ")} (exit ${g.code})`);
     }
   }
 
   // --- 13: falha de teste que a main não tem
-  const baseFails = testFails(repo);
-  const branchFails = testFails(wt);
+  const baseFails = suiteFails(repo, packages);
+  const branchFails = suiteFails(wt, packages);
   const slug = (lines: string[]) => lines.filter((f) => !baseFails.includes(f)).slice(0, 3).join(" ").replace(/"/g, "_");
   const extraBranch = slug(branchFails);
   if (extraBranch) return finish(13, `falha nova na branch: ${extraBranch}`);
@@ -298,7 +328,7 @@ export function runMerge(opts: MergeOptions): MergeResult {
   }
 
   // --- 14: main piorou depois do merge -> revert automático
-  const extraMain = slug(testFails(repo));
+  const extraMain = slug(suiteFails(repo, packages));
   if (extraMain) {
     // MERGE_GATE=1 para o hook reference-transaction do ginga não bloquear o revert
     // (sem -q: git revert (≥2.50) não aceita quiet (uso 129)).
