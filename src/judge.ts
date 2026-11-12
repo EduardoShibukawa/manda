@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { planBranchOf, planRepos, resolvePlanDir } from "./bundle";
+import { planBranchOf, planTargets, resolvePlanDir } from "./bundle";
 import { worktreeOfBranch } from "./worktree";
 import { loadProject } from "./project";
 import { resolveRuntime as defaultResolveRuntime } from "./runtime";
@@ -145,7 +145,7 @@ export async function judgePlan(opts: JudgeOptions): Promise<JudgeResult> {
   const planBranch = planBranchOf(dir);
   const targets =
     planBranch && opts.base === undefined && opts.head === undefined
-      ? planRepos(dir, root)
+      ? planTargets(dir, root)
           .map((r) => ({ ...r, wt: worktreeOfBranch(r.path, planBranch) }))
           .filter((t): t is { name: string; path: string; wt: string } => typeof t.wt === "string" && t.wt !== "")
           .map((t) => ({

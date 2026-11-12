@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { routeMain } from "./routing";
 
-import { CycleError, loadBundle, planBranchOf, planRepos, resolvePlanDir } from "./bundle";
+import { CycleError, loadBundle, planBranchOf, planRepos, planTargets, resolvePlanDir } from "./bundle";
 import { worktreeOfBranch } from "./worktree";
 import { findLlmAgent } from "./llm_guard";
 import { runMerge } from "./merge";
@@ -101,7 +101,7 @@ export function run(args: string[]): number {
         console.error(`plan não encontrado ou sem número: ${planArg}`);
         return 2;
       }
-      const targets = planRepos(dir, root).filter((r) => worktreeOfBranch(r.path, branch));
+      const targets = planTargets(dir, root).filter((r) => worktreeOfBranch(r.path, branch));
       if (targets.length === 0) {
         console.error(`nenhum repo de ${planArg} tem worktree de ${branch}`);
         return 2;

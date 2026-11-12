@@ -133,3 +133,31 @@ export function planRepos(dir: string, root: string): { name: string; path: stri
   if (names.length === 0) return [{ name: basename(root), path: root }];
   return names.map((name) => ({ name: isAbsolute(name) ? basename(name) : name, path: isAbsolute(name) ? name : join(root, name) }));
 }
+
+/**
+ * Repositórios git de um PLAN (T916). Num monorepo, `repo:` nomeia um pacote —
+ * uma pasta dentro de um repositório maior — e vários pacotes são o MESMO
+ * repositório: uma branch, uma worktree, um veredito, um merge. Fora de
+ * monorepo é igual a `planRepos`.
+ */
+export function planTargets(dir: string, root: string): { name: string; path: string }[] {
+  const out: { name: string; path: string }[] = [];
+  for (const r of planRepos(dir, root)) {
+    let path = r.path;
+    let name = r.name;
+    try {
+      const prefix = Bun.spawnSync(["git", "-C", r.path, "rev-parse", "--show-prefix"], { stdout: "pipe", stderr: "pipe" });
+      if (prefix.exitCode === 0 && prefix.stdout.toString().trim() !== "") {
+        const top = Bun.spawnSync(["git", "-C", r.path, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" });
+        if (top.exitCode === 0 && top.stdout.toString().trim() !== "") {
+          path = top.stdout.toString().trim();
+          name = basename(path);
+        }
+      }
+    } catch {
+      // sem git: fica o repo como veio
+    }
+    if (!out.some((t) => t.path === path)) out.push({ name, path });
+  }
+  return out;
+}
